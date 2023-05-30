@@ -5,6 +5,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from vunnel.providers import (
+    almalinux,
     alpine,
     amazon,
     chainguard,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
     from vunnel import provider
 
 _providers: dict[str, type[provider.Provider]] = {
+    almalinux.Provider.name(): almalinux.Provider,
     alpine.Provider.name(): alpine.Provider,
     amazon.Provider.name(): amazon.Provider,
     debian.Provider.name(): debian.Provider,

@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "type": "array",
+  "items": {
+      "type": "object",
+      "properties": {
+        "updateinfo_id": {
+          "type": "string"
+        },
+        "issued_date": {
+          "type": "object",
+          "properties": {
+            "$date": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "$date"
+          ]
+        },
+        "fromstr": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "rights": {
+          "type": "string"
+        },
+        "solution": {
+            "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "pushcount": {
+          "type": "string"
+        },
+        "updated_date": {
+          "type": "object",
+          "properties": {
+            "$date": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "$date"
+          ]
+        },
+        "pkglist": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "shortname": {
+              "type": "string"
+            },
+            "packages": {
+              "type": "array",
+              "items": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "src": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "release": {
+                      "type": "string"
+                    },
+                    "arch": {
+                      "type": "string"
+                    },
+                    "filename": {
+                      "type": "string"
+                    },
+                    "sum": {
+                      "type": "string"
+                    },
+                    "sum_type": {
+                      "type": "integer"
+                    },
+                    "reboot_suggested": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "src",
+                    "name",
+                    "epoch",
+                    "version",
+                    "release",
+                    "arch",
+                    "filename",
+                    "sum",
+                    "sum_type",
+                    "reboot_suggested"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "shortname",
+            "packages"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "references": {
+          "type": "array",
+          "items": [
+            {
+              "type": "object",
+              "properties": {
+                "href": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "href",
+                "type",
+                "id",
+                "title"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "updateinfo_id",
+        "issued_date",
+        "fromstr",
+        "title",
+        "type",
+        "release",
+        "version",
+        "rights",
+        "solution",
+        "status",
+        "severity",
+        "summary",
+        "pushcount",
+        "updated_date",
+        "pkglist",
+        "description",
+        "references"
+      ]
+  }
+
+}
