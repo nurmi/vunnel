@@ -6,9 +6,22 @@ import logging
 import os
 
 import requests
+
+from collections import namedtuple
+
 from vunnel import utils, workspace
 from vunnel.utils import vulnerability
-from vunnel.utils.vulnerability import FixedIn, Vulnerability
+from vunnel.utils.vulnerability import Vulnerability, FixedIn
+
+# TODO: investigate the 'module' mappings, seeing some partial/odd
+# elements in the data and need to verify the final implications (in
+# particular when reporting fixed versions across modules)
+
+# TODO: re-visit possible error paths / bailouts in the parser to
+# guarantee progress and proper instructive/useful warnings
+
+# TODO: re-visit record gets defaulting to either "" or None, align
+# with expectations of the resulting OS schema
 
 NAMESPACE = "almalinux"
 ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
@@ -39,8 +52,8 @@ class Parser:
         for local_file_path,namespace in self._download():
             with open(local_file_path, 'r') as FH:
                 alma_records = json.loads(FH.read())
-                
-            # TODO - could perform a schema check here
+
+            # TODO: consider adding an alma record schema check, here
             
             for alma_record in alma_records:
                 try:
@@ -65,7 +78,6 @@ class Parser:
         }
         severity = severity_dict[input.get('severity', 'none').lower()]
 
-
         cves = []
         metadata = {
             "CVE": [],
@@ -88,35 +100,71 @@ class Parser:
                                 'Link': reflink,
                             }
                         )
+                        
         if link == None:
-            # TODO handle case where the self link isn't set (seen in some records) - construct a
+            # handle case where the self link isn't set (seen in some records) - construct a
             #
             # https://errata.almalinux.org/8/ALSA-2021-4154.html
             #
             # url from an ALSA-2021:4154 vid
             #
-            pass
+            try:
+                nsname, nsvers = namespace.split(":", 1)
+            
+                html = "{}.html".format(vid)
+                pre,post = vid.split(":", 1)
+                if pre and post:
+                    html = "{}-{}.html".format(pre,post)                
+                link = "https://errata.almalinux.org/{}/{}".format(nsvers, html)
+            except Exception as err:
+                self.logger.warning("self link not set for vulnerability {}, leaving link null.  exception: {}".format(vid, err))
+                
+        module_info = None
+        module_name = input.get('pkglist', {}).get('module', {}).get('name', "")
+        module_version = input.get('pkglist', {}).get('module', {}).get('stream', "")
+        if module_name:
+            module_info = module_name
+            if module_version:
+                module_info = "{}:{}".format(module_name, module_version)
 
-        vidmap = {}
-
-        # TODO - observed that there are multiple versions for same
-        # package in the pkglist, need to keep track of the 'latest'
-        # and only create a fixedin record for that
-        
-        fixed_ins = []
+        wont_fix = False
+        vendor_advisory = {"NoAdvisory": False, "AdvisorySummary": []}
+        if wont_fix:
+            vendor_advisory = {"NoAdvisory": True}
+        else:
+            if vid and link:
+                vendor_advisory["AdvisorySummary"].append(
+                    {
+                        "ID": vid,
+                        "Link": link,
+                    }
+                )
+                
+        fins = {}
         for pkg in input.get('pkglist', {}).get('packages', []):
+            if pkg['arch'] not in ['x86_64', 'noarch']:
+                continue
+
             version = "{}:{}-{}".format(pkg['epoch'], pkg['version'], pkg['release'])
-            fin = FixedIn(
-                Name=pkg['name'],
-                NamespaceName=namespace,
-                VersionFormat="rpm",
-                Version=version,
-            )
-            fixed_ins.append(fin)
+            fin = {
+                "Name":pkg['name'],
+                "NamespaceName":namespace,
+                "VersionFormat":"rpm",
+                "Version":version,
+                "Module":module_info,
+                "VendorAdvisory":vendor_advisory,
+            }
+
+            # check if the currently processed fixed in record for a given package name is present and has a version less than what has already been processed, if so skip and if not, store as the 'latest' fixed in
+            if pkg['name'] in fins and utils.rpm.compare_versions(version, fins[pkg['name']]['Version']) <= 0:
+                continue
+            else:
+                fins[pkg['name']] = fin                
+
+        fixed_ins = list(fins.values())
 
         # TODO - maybe craft a metadata that has a few CVE: [{Name: CVE-1234, Link: ...}, {Name: ALSA-123:123, Link: almaerrata/ALSA-123-123.html}] records?
-        # TODO - CVSS populated for this type of vuln?
-        
+        vidmap = {}        
         for cve in cves:
             vid = cve
             v = Vulnerability(

@@ -12,12 +12,8 @@ import os
 if TYPE_CHECKING:
     import datetime
 
-# NOTE, CHANGE ME!: a unique and semantically useful name for this provider
 PROVIDER_NAME = "almalinux"
-
-# NOTE, CHANGE ME!: the data shape that all entries produced by this provider conform to
 SCHEMA = schema.OSSchema()
-
 
 @dataclass
 class Config:
@@ -47,9 +43,6 @@ class Provider(provider.Provider):
             allow_versions=self.config.allow_versions,
             logger=self.logger,
         )
-
-        # this provider requires the previous state from former runs
-        #provider.disallow_existing_input_policy(config.runtime)
 
     @classmethod
     def name(cls) -> str:
