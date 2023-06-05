@@ -21,6 +21,7 @@ from vunnel.utils.vulnerability import Vulnerability
 NAMESPACE = "almalinux"
 ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
 
+
 class Parser:
     def __init__(self, workspace, download_timeout, allow_versions, logger):
         self.workspace = workspace
@@ -44,7 +45,7 @@ class Parser:
         return destination, namespace
 
     def get(self):
-        for local_file_path,namespace in self._download():
+        for local_file_path, namespace in self._download():
             with open(local_file_path) as FH:
                 alma_records = json.loads(FH.read())
 
@@ -66,7 +67,7 @@ class Parser:
             "important": "High",
             "critical": "Critical",
         }
-        return(severity_dict[in_severity.lower()])
+        return severity_dict[in_severity.lower()]
 
     def _parse_linkrefs(self, in_refs, vid, namespace):
         cves = []
@@ -92,14 +93,14 @@ class Parser:
                 nsname, nsvers = namespace.split(":", 1)
 
                 html = f"{vid}.html"
-                pre,post = vid.split(":", 1)
+                pre, post = vid.split(":", 1)
                 if pre and post:
                     html = f"{pre}-{post}.html"
                 link = f"https://errata.almalinux.org/{nsvers}/{html}"
             except Exception as err:
                 self.logger.warning(f"self link not set for vulnerability {vid}, leaving link null.  exception: {err}")
 
-        return(link, cves)
+        return (link, cves)
 
     def _parse_moduleinfo(self, in_module_name, in_module_version):
         module_info = None
@@ -108,7 +109,7 @@ class Parser:
             if in_module_version:
                 module_info += f":{in_module_version}"
 
-        return(module_info)
+        return module_info
 
     def _parse_vendor_advisory(self, vid, link):
         wont_fix = False
@@ -123,7 +124,7 @@ class Parser:
                 },
             )
 
-        return(vendor_advisory)
+        return vendor_advisory
 
     def _parse_fixed_ins(self, in_pkgs, namespace, module_info, vendor_advisory):
         fins = {}
@@ -133,12 +134,12 @@ class Parser:
 
             version = "{}:{}-{}".format(pkg["epoch"], pkg["version"], pkg["release"])
             fin = {
-                "Name":pkg["name"],
-                "NamespaceName":namespace,
-                "VersionFormat":"rpm",
-                "Version":version,
-                "Module":module_info,
-                "VendorAdvisory":vendor_advisory,
+                "Name": pkg["name"],
+                "NamespaceName": namespace,
+                "VersionFormat": "rpm",
+                "Version": version,
+                "Module": module_info,
+                "VendorAdvisory": vendor_advisory,
             }
 
             # check if the currently processed fixed in record for a
@@ -150,7 +151,7 @@ class Parser:
                 continue
             fins[pkg["name"]] = fin
 
-        return(list(fins.values()))
+        return list(fins.values())
 
     def parse_alma_record(self, input_record, namespace):
         vid = input_record.get("updateinfo_id", None)
@@ -195,4 +196,4 @@ class Parser:
             )
             vidmap[vid] = v
 
-        return(vidmap)
+        return vidmap

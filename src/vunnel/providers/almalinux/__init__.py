@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 PROVIDER_NAME = "almalinux"
 SCHEMA = schema.OSSchema()
 
+
 @dataclass
 class Config:
     runtime: provider.RuntimeConfig = field(
