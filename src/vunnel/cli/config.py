@@ -13,7 +13,7 @@ from vunnel import providers
 
 @dataclass
 class Providers:
-    almalinux: providers.almalinux.Config = field(default_factory=providers.almalinux.Config)    
+    almalinux: providers.almalinux.Config = field(default_factory=providers.almalinux.Config)
     alpine: providers.alpine.Config = field(default_factory=providers.alpine.Config)
     amazon: providers.amazon.Config = field(default_factory=providers.amazon.Config)
     chainguard: providers.chainguard.Config = field(default_factory=providers.chainguard.Config)
