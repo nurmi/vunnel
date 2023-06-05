@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import requests
 
 from vunnel import utils
-from vunnel.utils.vulnerability import Vulnerability,FixedIn
+from vunnel.utils.vulnerability import FixedIn, Vulnerability
 
 if TYPE_CHECKING:
     import logging
@@ -28,20 +28,21 @@ if TYPE_CHECKING:
 NAMESPACE = "almalinux"
 ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
 
+
 class Parser:
-#    def __init__(self, workspace, download_timeout, allow_versions, logger):
-    def __init__(self, workspace: Workspace, download_timeout: int, allow_versions: list[Any], logger: logging.Logger):        
+    #    def __init__(self, workspace, download_timeout, allow_versions, logger):
+    def __init__(self, workspace: Workspace, download_timeout: int, allow_versions: list[Any], logger: logging.Logger):
         self.workspace = workspace
         self.download_timeout = download_timeout
         self.allow_versions = allow_versions
         self.urls: list[str] = []
         self.logger = logger
 
-    def _download(self) -> list[tuple[str,str]]:
+    def _download(self) -> list[tuple[str, str]]:
         # TODO - check for last version + 1, based on config?
         return [self._download_version(v) for v in self.allow_versions]
 
-    def _download_version(self, version: str) -> tuple[str,str]:
+    def _download_version(self, version: str) -> tuple[str, str]:
         localfilename = f"almalinux_{version}.json"
         namespace = f"almalinux:{version}"
         url = ALMALINUX_URL_BASE.format(version)
@@ -124,7 +125,7 @@ class Parser:
             "NoAdvisory": False,
             "AdvisorySummary": [],
         }
-        
+
         if wont_fix:
             vendor_advisory["NoAdvisory"] = True
         elif vid and link:
@@ -136,21 +137,23 @@ class Parser:
 
         return vendor_advisory
 
-    def _parse_fixed_ins(self, in_pkgs: list[dict[str, Any]], namespace: str, module_info: str | None, vendor_advisory: dict[str, Any]) -> list[FixedIn]:
-        fins = {} # type: dict[str,Any]
+    def _parse_fixed_ins(
+        self, in_pkgs: list[dict[str, Any]], namespace: str, module_info: str | None, vendor_advisory: dict[str, Any],
+    ) -> list[FixedIn]:
+        fins = {}  # type: dict[str,Any]
         for pkg in in_pkgs:
             if pkg.get("arch", "") not in ["x86_64", "noarch"]:
                 continue
 
             version = "{}:{}-{}".format(pkg["epoch"], pkg["version"], pkg["release"])
-            #fin = {
+            # fin = {
             #    "Name": pkg["name"],
             #    "NamespaceName": namespace,
             #    "VersionFormat": "rpm",
             #    "Version": version,
             #    "Module": module_info,
             #    "VendorAdvisory": vendor_advisory,
-            #}
+            # }
 
             fin = FixedIn(
                 Name=pkg["name"],
@@ -160,7 +163,7 @@ class Parser:
                 Module=module_info,
                 VendorAdvisory=vendor_advisory,
             )
-            
+
             # check if the currently processed fixed in record for a
             # given package name is present and has a version less
             # than what has already been processed, if so skip and if
@@ -200,7 +203,7 @@ class Parser:
         fixed_ins = self._parse_fixed_ins(in_pkgs, namespace, module_info, vendor_advisory)
 
         # construct the final set of OS schema records
-        
+
         vidmap = {}
         for cve in cves:
             vid = cve
