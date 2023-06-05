@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 from vunnel import utils
-from vunnel.utils.vulnerability import Vulnerability
+from vunnel.utils.vulnerability import Vulnerability,FixedIn
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Generator
+
+    from vunnel.workspace import Workspace
 
 # TODO: investigate the 'module' mappings, seeing some partial/odd
 # elements in the data and need to verify the final implications (in
@@ -21,20 +28,20 @@ from vunnel.utils.vulnerability import Vulnerability
 NAMESPACE = "almalinux"
 ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
 
-
 class Parser:
-    def __init__(self, workspace, download_timeout, allow_versions, logger):
+#    def __init__(self, workspace, download_timeout, allow_versions, logger):
+    def __init__(self, workspace: Workspace, download_timeout: int, allow_versions: list[Any], logger: logging.Logger):        
         self.workspace = workspace
         self.download_timeout = download_timeout
         self.allow_versions = allow_versions
         self.urls: list[str] = []
         self.logger = logger
 
-    def _download(self) -> list[str]:
+    def _download(self) -> list[tuple[str,str]]:
         # TODO - check for last version + 1, based on config?
         return [self._download_version(v) for v in self.allow_versions]
 
-    def _download_version(self, version: str) -> str:
+    def _download_version(self, version: str) -> tuple[str,str]:
         localfilename = f"almalinux_{version}.json"
         namespace = f"almalinux:{version}"
         url = ALMALINUX_URL_BASE.format(version)
@@ -44,7 +51,7 @@ class Parser:
             writer.write(r.content)
         return destination, namespace
 
-    def get(self):
+    def get(self) -> Generator[tuple[str, str, dict[str, dict[str, Any]]], None, None]:
         for local_file_path, namespace in self._download():
             with open(local_file_path) as FH:
                 alma_records = json.loads(FH.read())
@@ -59,7 +66,7 @@ class Parser:
                 except Exception as err:
                     self.logger.warning(f"skipping alma record - exception: {err}")
 
-    def _parse_severity(self, in_severity):
+    def _parse_severity(self, in_severity: str) -> str:
         severity_dict = {
             "none": "Unknown",
             "low": "Low",
@@ -69,12 +76,12 @@ class Parser:
         }
         return severity_dict[in_severity.lower()]
 
-    def _parse_linkrefs(self, in_refs, vid, namespace):
+    def _parse_linkrefs(self, in_refs: list[dict[str, str]], vid: str, namespace: str) -> tuple[str, list[str]]:
         cves = []
-        link = None
+        link = ""
         for ref in in_refs:
             reftype = ref.get("type", "")
-            reflink = ref.get("href", None)
+            reflink = ref.get("href", "")
             refid = ref.get("id", None)
 
             if reftype == "self":
@@ -102,7 +109,7 @@ class Parser:
 
         return (link, cves)
 
-    def _parse_moduleinfo(self, in_module_name, in_module_version):
+    def _parse_moduleinfo(self, in_module_name: str, in_module_version: str) -> str | None:
         module_info = None
         if in_module_name:
             module_info = in_module_name
@@ -111,37 +118,49 @@ class Parser:
 
         return module_info
 
-    def _parse_vendor_advisory(self, vid, link):
+    def _parse_vendor_advisory(self, vid: str, link: str | None) -> dict[str, Any]:
         wont_fix = False
-        vendor_advisory = {"NoAdvisory": False, "AdvisorySummary": []}
+        vendor_advisory = {
+            "NoAdvisory": False,
+            "AdvisorySummary": [],
+        }
+        
         if wont_fix:
-            vendor_advisory = {"NoAdvisory": True}
+            vendor_advisory["NoAdvisory"] = True
         elif vid and link:
-            vendor_advisory["AdvisorySummary"].append(
-                {
-                    "ID": vid,
-                    "Link": link,
-                },
-            )
+            el = {
+                "ID": vid,
+                "Link": link,
+            }
+            vendor_advisory["AdvisorySummary"] = [el]
 
         return vendor_advisory
 
-    def _parse_fixed_ins(self, in_pkgs, namespace, module_info, vendor_advisory):
-        fins = {}
+    def _parse_fixed_ins(self, in_pkgs: list[dict[str, Any]], namespace: str, module_info: str | None, vendor_advisory: dict[str, Any]) -> list[FixedIn]:
+        fins = {} # type: dict[str,Any]
         for pkg in in_pkgs:
-            if pkg["arch"] not in ["x86_64", "noarch"]:
+            if pkg.get("arch", "") not in ["x86_64", "noarch"]:
                 continue
 
             version = "{}:{}-{}".format(pkg["epoch"], pkg["version"], pkg["release"])
-            fin = {
-                "Name": pkg["name"],
-                "NamespaceName": namespace,
-                "VersionFormat": "rpm",
-                "Version": version,
-                "Module": module_info,
-                "VendorAdvisory": vendor_advisory,
-            }
+            #fin = {
+            #    "Name": pkg["name"],
+            #    "NamespaceName": namespace,
+            #    "VersionFormat": "rpm",
+            #    "Version": version,
+            #    "Module": module_info,
+            #    "VendorAdvisory": vendor_advisory,
+            #}
 
+            fin = FixedIn(
+                Name=pkg["name"],
+                NamespaceName=namespace,
+                VersionFormat="rpm",
+                Version=version,
+                Module=module_info,
+                VendorAdvisory=vendor_advisory,
+            )
+            
             # check if the currently processed fixed in record for a
             # given package name is present and has a version less
             # than what has already been processed, if so skip and if
@@ -153,7 +172,7 @@ class Parser:
 
         return list(fins.values())
 
-    def parse_alma_record(self, input_record, namespace):
+    def parse_alma_record(self, input_record: dict[str, Any], namespace: str) -> dict[str, Vulnerability]:
         vid = input_record.get("updateinfo_id", None)
         in_description = input_record.get("description", "")
         in_type = input_record.get("type", "")
