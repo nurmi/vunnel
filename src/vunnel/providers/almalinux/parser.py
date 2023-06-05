@@ -138,7 +138,11 @@ class Parser:
         return vendor_advisory
 
     def _parse_fixed_ins(
-        self, in_pkgs: list[dict[str, Any]], namespace: str, module_info: str | None, vendor_advisory: dict[str, Any],
+        self,
+        in_pkgs: list[dict[str, Any]],
+        namespace: str,
+        module_info: str | None,
+        vendor_advisory: dict[str, Any],
     ) -> list[FixedIn]:
         fins = {}  # type: dict[str,Any]
         for pkg in in_pkgs:
