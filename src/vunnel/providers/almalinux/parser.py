@@ -166,7 +166,7 @@ class Parser:
             # than what has already been processed, if so skip and if
             # not, store as the 'latest' fixed in
 
-            if pkg["name"] in fins and utils.rpm.compare_versions(version, fins[pkg["name"]]["Version"]) <= 0:
+            if pkg["name"] in fins and utils.rpm.compare_versions(version, fins[pkg["name"]].Version) <= 0:
                 continue
             fins[pkg["name"]] = fin
 
@@ -183,12 +183,15 @@ class Parser:
         in_pkgs = input_record.get("pkglist", {}).get("packages", [])
         input_record.get("description", "")
 
+        # quick check to make sure this is a security advisory and has a name
         if not vid or in_type != "security":
             return {}
 
+        # parse out all the input into what we need for processing / setup into an OS Schema record
+
         severity = self._parse_severity(in_severity)
 
-        link, cves = self._parse_linkrefs(in_refs, vid=vid, namespace=namespace)
+        link, cves = self._parse_linkrefs(in_refs, vid, namespace)
 
         module_info = self._parse_moduleinfo(in_module_name, in_module_version)
 
@@ -196,10 +199,8 @@ class Parser:
 
         fixed_ins = self._parse_fixed_ins(in_pkgs, namespace, module_info, vendor_advisory)
 
-        # TODO - maybe craft a metadata that has a few CVE: [{Name:
-        # CVE-1234, Link: ...}, {Name: ALSA-123:123, Link:
-        # almaerrata/ALSA-123-123.html}] records?
-
+        # construct the final set of OS schema records
+        
         vidmap = {}
         for cve in cves:
             vid = cve
