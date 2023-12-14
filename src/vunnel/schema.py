@@ -8,12 +8,20 @@ GITHUB_SECURITY_ADVISORY_SCHEMA_VERSION = "1.0.1"
 MSRC_SCHEMA_VERSION = "1.0.0"
 OS_SCHEMA_VERSION = "1.0.0"
 NVD_SCHEMA_VERSION = "1.0.0"
+EPSS_SCHEMA_VERSION = "1.0.0"
 
 
 @dataclass(frozen=True)
 class Schema:
     version: str
     url: str
+
+
+def EPSSSchema(version: str = EPSS_SCHEMA_VERSION) -> Schema:
+    return Schema(
+        version=version,
+        url=f"https://raw.githubusercontent.com/anchore/vunnel/main/schema/vulnerability/epss/schema-{version}.json",
+    )
 
 
 def ProviderStateSchema(version: str = PROVIDER_WORKSPACE_STATE_SCHEMA_VERSION) -> Schema:
