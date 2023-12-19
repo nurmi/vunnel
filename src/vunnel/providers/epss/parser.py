@@ -8,23 +8,19 @@ import requests
 
 from vunnel import utils, workspace
 
-# NOTE, CHANGE ME!: this namespace should be unique to your provider and match expectations from
-# grype to know what to search for in the DB.
 NAMESPACE = "epss"
 
 
 class Parser:
-    # NOTE, CHANGE ME!: remove / add / change these attributes as needed to download and parse your provider
+    # this provider is 'basic functionality' to just encode the getting of EPSS data by exercising the public API (see https://api.first.org/epss/)
+    # using JSON lines (https://jsonlines.org/) for storing downloaded data in order to efficiently stream, for now
     _json_url_ = "https://api.first.org/data/v1/epss"
-    _json_file_ = "vulnerability_data.json"
+    _json_file_ = "epss_data.jsonl"
 
     def __init__(self, ws: workspace.Workspace, download_timeout: int = 125, logger: logging.Logger | None = None):
         self.workspace = ws
         self.download_timeout = download_timeout
         self.json_file_path = os.path.join(ws.input_path, self._json_file_)
-
-        # NOTE, CHANGE ME!: you should always record any URLs accessed in this list, either
-        # statically or dynamically within _download()
         self.urls = [self._json_url_]
 
         if not logger:
@@ -37,56 +33,47 @@ class Parser:
 
     @utils.retry_with_backoff()
     def _download(self):
-        self.logger.info(f"downloading vulnerability data from {self._json_url_}")
-        total = 1000
+        self.logger.info(f"EPSS data download starting")        
         limit = 10000
         offset = 0
         current = 0
-        r = requests.get(self._json_url_, params={'limit': limit, 'offset': offset}, timeout=self.download_timeout)
-        r.raise_for_status()
+        
+        params = {'limit': limit, 'offset': offset}
+        self.logger.info(f"downloading EPSS data from {self._json_url_} with params {params}")
 
+        r = requests.get(self._json_url_, params=params, timeout=self.download_timeout)
+        r.raise_for_status()
+        total = r.json().get("total", 0)
+        total = 20000       # for debugging - set this to limit the total number fetched
         with open(self.json_file_path, "w", encoding="utf-8") as f:
-            f.write("[\n")
             done = False
             while not done:
                 for record in r.json().get('data', []):
-                    f.write(json.dumps(record) + ",\n")
-                print ("HERE: {} {}".format(total, current))
+                    f.write(json.dumps(record) + "\n")
+                    
                 current = current + limit
-                total = r.json().get("total", 0)
                 if current >= total:
                     done = True
                 else:
                     offset = offset + limit
-                    print ("FETCH: {} {}".format(self._json_url_, {'limit': limit, 'offset': offset}))
-                    r = requests.get(self._json_url_, params={'limit': limit, 'offset': offset}, timeout=self.download_timeout)
-                    r.raise_for_status()
-            f.write("{}]\n")
 
+                    params = {'limit': limit, 'offset': offset}
+                    self.logger.info(f"downloading EPSS data from {self._json_url_} with params {params}")
+                    
+                    r = requests.get(self._json_url_, params=params, timeout=self.download_timeout)
+                    r.raise_for_status()
+        self.logger.info(f"EPSS data download completed")
+        
     def _normalize(self):
+        self.logger.info(f"EPSS data normalizing starting - processing JSON lines from {self.json_file_path}")
+        count=0
         with open(self.json_file_path, encoding="utf-8") as f:
-            d = json.loads(f.read())
-            print(d)
-            for input_record in d:
+            for line in f.readlines():
+                count = count + 1
+                if count % 5000 == 0:
+                    self.logger.info(f"normalizing EPSS data, processed {count} records")
+                input_record = json.loads(line)
                 if not input_record:
                     continue
                 yield input_record.get("cve"), input_record
-                # NOTE: this is in the data shape described by the OS vulnerability schema
-                #yield vuln_id, {
-                #    "Vulnerability": {
-                #        "Name": vuln_id,
-                #        "NamespaceName": NAMESPACE,
-                #        "Link": f"https://someplace.com/{vuln_id}",
-                #        "Severity": input_record["severity"],
-                #        "Description": input_record["description"],
-                #        "FixedIn": [
-                #            {
-                #                "Name": p,
-                #                "VersionFormat": "apk",
-                #                "NamespaceName": NAMESPACE,
-                #                "Version": input_record["fixed"] or "None",
-                #            }
-                #            for p in input_record["packages"]
-                #        ],
-                #    },
-                #}
+        self.logger.info(f"EPSS data normalizing completed")
