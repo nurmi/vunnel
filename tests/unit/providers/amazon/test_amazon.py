@@ -4,6 +4,7 @@ import shutil
 
 import pytest
 from vunnel import result, workspace
+from vunnel.utils import http
 from vunnel.providers.amazon import Config, Provider, parser
 
 
@@ -55,6 +56,7 @@ class TestParser:
 
         assert p.fixes is not None
         assert new_packages == p.fixes
+        assert p.issue_overview_text is not None
         # TODO: beef up these assertions (should cover the full data shape)
 
     def test_get_pkg_name_version(self):
@@ -73,14 +75,6 @@ class TestParser:
         a = parser.Parser.get_package_name_version("java-1.8.0-openjdk-1.8.0.161-0.b14.amzn2.src")
         b = parser.Parser.get_package_name_version("java-1.8.0-openjdk-1.8.0.161-0.b14.amzn2.x86_64")
         assert a == b
-
-
-@pytest.fixture()
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
 
 
 def test_provider_schema(helpers, disable_get_requests, monkeypatch):
@@ -102,3 +96,27 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
 
     assert 3 == workspace.num_result_entries()
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
+
+    c = Config()
+    # keep all of the default values for the result store, but override the strategy
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(
+        root=workspace.root,
+        config=c,
+    )
+
+    def mock_download(_url, _file):
+        return None
+
+    monkeypatch.setattr(p.parser, "_download_rss", mock_download)
+
+    p.update(None)
+
+    workspace.assert_result_snapshots()

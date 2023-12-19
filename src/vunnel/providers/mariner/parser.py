@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
-import requests
 from lxml import etree
 from xsdata.formats.dataclass.parsers import XmlParser
 from xsdata.formats.dataclass.parsers.config import ParserConfig
 
 from vunnel.providers.mariner.model import Definition, RpminfoObject, RpminfoState, RpminfoTest
+from vunnel.utils import http
 from vunnel.utils.vulnerability import FixedIn, Vulnerability
 
 if TYPE_CHECKING:
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 LESS_THAN_OR_EQUAL_TO = "less than or equal"
 
+IGNORED_PATCHABLE_VALUES = ["Not Applicable"]
+
 
 class MarinerXmlFile:
     def __init__(self, oval_file_path: str, logger: logging.Logger):
@@ -28,7 +30,8 @@ class MarinerXmlFile:
             fail_on_unknown_properties=False,
         )
         xml_parser = XmlParser(config=parser_config)
-        root = etree.parse(oval_file_path)
+        # S320 disable explanation: the mariner linux vulnerability feed is not untrusted xml
+        root = etree.parse(oval_file_path)  # noqa: S320
         nsmap = etree.XPath("/*")(root)[0].nsmap
         default = nsmap[None]
         nsmap["default"] = default
@@ -44,7 +47,6 @@ class MarinerXmlFile:
                 self.definitions.append(definition)
             except Exception as ex:
                 self.logger.warning(f"skipping definition element in {oval_file_path} due to {ex}")
-                pass
 
         self.tests_by_id = {}
         for test_element in etree.XPath("//linux-def:rpminfo_test", namespaces=nsmap)(root):
@@ -146,8 +148,8 @@ class MarinerXmlFile:
             if d.metadata is None or d.metadata.severity is None:
                 self.logger.warning("skipping definition because severity could not be found")
                 continue
-            if d.metadata.description:
-                pass
+            if d.metadata and d.metadata.patchable and d.metadata.patchable in IGNORED_PATCHABLE_VALUES:
+                continue
             link = ""
             if d.metadata.reference and d.metadata.reference.ref_url:
                 link = d.metadata.reference.ref_url
@@ -187,7 +189,7 @@ class Parser:
     def _download_version(self, version: str) -> str:
         filename = MARINER_URL_FILENAME.format(version)
         url = MARINER_URL_BASE.format(filename)
-        r = requests.get(url, timeout=self.download_timeout)
+        r = http.get(url, self.logger, timeout=self.download_timeout)
         destination = os.path.join(self.workspace.input_path, filename)
         with open(destination, "wb") as writer:
             writer.write(r.content)

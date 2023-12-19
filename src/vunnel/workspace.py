@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import datetime  # noqa: TCH003
-import json
 import logging
 import os
 import shutil
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import orjson
 import xxhash
-from dataclass_wizard import fromdict
+from mashumaro.mixins.dict import DataClassDictMixin
 
 from vunnel import schema as schemaDef
 from vunnel import utils
@@ -31,23 +30,20 @@ class File:
 
 
 @dataclass
-class State:
+class State(DataClassDictMixin):
     provider: str
     urls: list[str]
     store: str
     timestamp: datetime.datetime
     version: int = 1
-    listing: File | None = None
+    listing: Optional[File] = None  # noqa:UP007  # why use Optional? mashumaro does not support this on python 3.9
     schema: schemaDef.Schema = field(default_factory=schemaDef.ProviderStateSchema)
 
     @staticmethod
     def read(root: str) -> State:
         metadata_path = os.path.join(root, METADATA_FILENAME)
         with open(metadata_path, encoding="utf-8") as f:
-            return fromdict(
-                State,
-                orjson.loads(f.read()),
-            )
+            return State.from_dict(orjson.loads(f.read()))
 
     def write(self, root: str, results: str, update_listing: bool = True) -> str:
         metadata_path = os.path.join(root, METADATA_FILENAME)
@@ -69,8 +65,8 @@ class State:
                 path=os.path.basename(listing_path),  # may have been overridden, keep value
             )
 
-        with open(metadata_path, "w") as f:
-            json.dump(asdict(self), f, indent=2, cls=utils.DTEncoder)
+        with open(metadata_path, "wb") as f:
+            f.write(orjson.dumps(asdict(self), option=orjson.OPT_INDENT_2))
 
         return metadata_path
 

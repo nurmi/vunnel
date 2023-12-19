@@ -60,6 +60,17 @@ class TestParser:
                         },
                     },
                 },
+                {
+                    "pkg": {
+                        "name": "apko",
+                        "secfixes": {
+                            "0": ["CVE-2023-45283", "CVE-2023-45284", "GHSA-jq35-85cj-fj4p"],
+                            "0.10.0-r6": ["CVE-2023-39325", "CVE-2023-3978"],
+                            "0.7.3-r1": ["CVE-2023-28840", "CVE-2023-28841", "CVE-2023-28842"],
+                            "0.8.0-r1": ["CVE-2023-30551"],
+                        },
+                    },
+                },
             ],
         }
 
@@ -125,6 +136,17 @@ class TestParser:
                         },
                     },
                 },
+                {
+                    "pkg": {
+                        "name": "apko",
+                        "secfixes": {
+                            "0": ["CVE-2023-45283", "CVE-2023-45284", "GHSA-jq35-85cj-fj4p"],
+                            "0.10.0-r6": ["CVE-2023-39325", "CVE-2023-3978"],
+                            "0.7.3-r1": ["CVE-2023-28840", "CVE-2023-28841", "CVE-2023-28842"],
+                            "0.8.0-r1": ["CVE-2023-30551"],
+                        },
+                    },
+                },
             ],
         }
         return release, dbtype_data_dict
@@ -175,29 +197,48 @@ class TestParser:
                 "CVE-2022-42010",
                 "CVE-2022-42011",
                 "CVE-2022-42012",
+                "CVE-2023-28840",
+                "CVE-2023-28841",
+                "CVE-2023-28842",
+                "CVE-2023-30551",
+                "CVE-2023-39325",
+                "CVE-2023-3978",
+                "CVE-2023-45283",
+                "CVE-2023-45284",
+                "GHSA-jq35-85cj-fj4p",
             ],
         )
 
 
-@pytest.fixture()
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
-
-
 def test_provider_schema(helpers, disable_get_requests):
-    workspace = helpers.provider_workspace_helper(name=Provider.name())
-
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
     c = Config()
     c.runtime.result_store = result.StoreStrategy.FLAT_FILE
     p = Provider(root=workspace.root, config=c)
 
-    mock_data_path = helpers.local_dir("test-fixtures/input")
-    shutil.copytree(mock_data_path, workspace.input_dir, dirs_exist_ok=True)
+    p.update(None)
+
+    assert workspace.num_result_entries() == 59
+    assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
+
+    c = Config()
+    # keep all of the default values for the result store, but override the strategy
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(
+        root=workspace.root,
+        config=c,
+    )
 
     p.update(None)
 
-    assert workspace.num_result_entries() == 50
-    assert workspace.result_schemas_valid(require_entries=True)
+    workspace.assert_result_snapshots()

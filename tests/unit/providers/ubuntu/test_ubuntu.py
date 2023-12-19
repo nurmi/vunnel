@@ -21,8 +21,10 @@ from vunnel.providers.ubuntu.parser import (
     parse_cve_file,
     parse_list,
     parse_multiline_keyvalue,
+    parse_severity_from_priority,
     parse_simple_keyvalue,
     patch_states,
+    Severity,
     ubuntu_version_names,
 )
 
@@ -311,12 +313,18 @@ class TestUbuntuParser:
             (Patch(distro="foo", package="bar", status="ignored ftw", version="end-of-life now but something else before"), True),
             (Patch(distro="foo", package="bar", status="ignored", version="reached end-of-life"), True),
             (Patch(distro="foo", package="bar", status="ignored", version="end-of-life"), True),
+            (Patch(distro="foo", package="bar", status="ignored", version="end-of-life, was needed"), True),
             (Patch(distro="foo", package="bar", status="ignored", version="was pending now end-of-life"), True),
             (Patch(distro="foo", package="bar", status="ignored", version="end_of_life"), False),
             (Patch(distro="foo", package="bar", status="ignored", version="bleddyend-of-lifeas we know"), False),
             (Patch(distro="foo", package="bar", status="ignored", version="end times of all life"), False),
             (Patch(distro="foo", package="bar", status="some-invalid-state", version="end-of-life"), False),
             (Patch(distro="foo", package="bar", status="ignored", version="oh so end-of-lifed"), False),
+            (Patch(distro="foo", package="bar", status="ignored", version="end of standard support"), True),
+            (Patch(distro="foo", package="bar", status="ignored", version="out of standard support"), True),
+            (Patch(distro="foo", package="bar", status="ignored", version="end-of-standard-support"), True),
+            (Patch(distro="foo", package="bar", status="ignored", version="out-of-standard-support"), True),
+            (Patch(distro="foo", package="bar", status="ignored", version="end of standard support, was needed"), True),
         ],
     )
     def test_check_merge(self, patch: Patch, expected: bool):
@@ -386,6 +394,63 @@ class TestUbuntuParser:
 
         result = udp._reprocess_merged_cve(cve_id, cvs_file)
         assert result.patches == data.patches + [Patch(**p) for p in new_distro_patches]
+
+    @pytest.mark.parametrize(
+        ("cve", "expected_severity"),
+        [
+            (
+                CVEFile(name="unset"),
+                Severity.Unknown,
+            ),
+            (
+                CVEFile(name="unknown", priority="unknown"),
+                Severity.Unknown,
+            ),
+            (
+                CVEFile(name="untriaged", priority="untriaged"),
+                Severity.Unknown,
+            ),
+            (
+                CVEFile(name="negligible", priority="negligible"),
+                Severity.Negligible,
+            ),
+            (
+                CVEFile(name="low", priority="low"),
+                Severity.Low,
+            ),
+            (
+                CVEFile(name="medium", priority="medium"),
+                Severity.Medium,
+            ),
+            (
+                CVEFile(name="high", priority="high"),
+                Severity.High,
+            ),
+            (
+                CVEFile(name="critical", priority="critical"),
+                Severity.Critical,
+            ),
+        ],
+    )
+    def test_parse_severity_from_priority(self, cve: CVEFile, expected_severity: Severity):
+        assert parse_severity_from_priority(cve) == expected_severity
+
+    @pytest.mark.parametrize(
+        ("cve", "error_type"),
+        [
+            (
+                CVEFile(name="unset", priority="something-else"),
+                AttributeError,
+            ),
+            (
+                None,
+                Exception,
+            ),
+        ],
+    )
+    def test_parse_severity_from_priority(self, cve: CVEFile, error_type: Exception):
+        with pytest.raises(error_type):
+            parse_severity_from_priority(cve)
 
 
 @pytest.fixture()
@@ -483,3 +548,17 @@ def test_provider_schema(helpers, mock_data_path, hydrate_git_repo, expected_wri
 
     assert expected_written_entries == ws.num_result_entries()
     assert ws.result_schemas_valid(require_entries=expected_written_entries > 0)
+
+
+def test_provider_via_snapshot(helpers, hydrate_git_repo, mocker):
+    path = hydrate_git_repo("test-fixtures/repo-fast-export")
+
+    c = ubuntu.Config()
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = ubuntu.Provider(root=path, config=c)
+    p.parser.git_wrapper.init_repo = mocker.Mock()
+    p.update(None)
+
+    ws = helpers.provider_workspace_helper("ubuntu", create=False)
+
+    ws.assert_result_snapshots()

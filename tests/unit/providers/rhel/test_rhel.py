@@ -444,7 +444,7 @@ class TestParser:
 
     def test_parse_package_state(self, tmpdir, mock_cve):
         driver = Parser(workspace=workspace.Workspace(tmpdir, "test", create=True))
-        results = driver._parse_package_state(mock_cve.get("name"), mock_cve)
+        results = driver._parse_package_state([], mock_cve.get("name"), mock_cve)
 
         assert results and isinstance(results, list) and len(results) == 1
         fixed_in = results[0]
@@ -511,153 +511,11 @@ class TestParser:
         assert Parser._get_name_version(package) == (name, version)
 
 
-@pytest.mark.parametrize(
-    "affected, out_of_support, expected",
-    [
-        (
-            [
-                FixedIn(
-                    module=None,
-                    platform="6",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="5",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="6",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                ),
-                FixedIn(
-                    module=None,
-                    platform="5",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                ),
-            ],
-        ),
-        (
-            [
-                FixedIn(
-                    module=None,
-                    platform="5",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="6",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="5",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                ),
-            ],
-        ),
-        (
-            [
-                FixedIn(
-                    module=None,
-                    platform="7",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [],
-            [
-                FixedIn(
-                    module=None,
-                    platform="7",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                ),
-            ],
-        ),
-        (
-            [],
-            [
-                FixedIn(
-                    module=None,
-                    platform="7",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [],
-        ),
-        (
-            [
-                FixedIn(
-                    module=None,
-                    platform="8",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="7",
-                    package="foobar2",
-                    advisory=None,
-                    version=None,
-                )
-            ],
-            [
-                FixedIn(
-                    module=None,
-                    platform="8",
-                    package="foobar",
-                    advisory=None,
-                    version=None,
-                ),
-            ],
-        ),
-    ],
-)
-def test_out_of_support(affected, out_of_support, expected):
-    assert Parser._merge_out_of_support_affected(affected, out_of_support) == expected
-
-
-@pytest.fixture
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
-
-
 def test_provider_schema(helpers, disable_get_requests, monkeypatch):
-    workspace = helpers.provider_workspace_helper(name=Provider.name())
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
 
     c = Config()
     c.runtime.result_store = result.StoreStrategy.FLAT_FILE
@@ -671,9 +529,6 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
 
     monkeypatch.setattr(p.parser, "_sync_cves", mock_sync_cves)
     monkeypatch.setattr(p.parser, "_init_rhsa_data", mock_init_rhsa_data)
-
-    mock_data_path = helpers.local_dir("test-fixtures/input")
-    shutil.copytree(mock_data_path, workspace.input_dir, dirs_exist_ok=True)
 
     p.update(None)
 
@@ -699,3 +554,27 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
     #   "CVE-2017-3511" (rhel 7)
 
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
+
+    c = Config()
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(root=workspace.root, config=c)
+
+    def mock_sync_cves(*args, **kwargs):
+        return os.path.join(p.parser.cve_dir_path, p.parser.__full_dir_name__)
+
+    def mock_init_rhsa_data(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(p.parser, "_sync_cves", mock_sync_cves)
+    monkeypatch.setattr(p.parser, "_init_rhsa_data", mock_init_rhsa_data)
+
+    p.update(None)
+
+    workspace.assert_result_snapshots()

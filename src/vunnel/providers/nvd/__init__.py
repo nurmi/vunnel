@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from vunnel import provider, result, schema
 from vunnel.providers.nvd.manager import Manager
@@ -16,14 +16,14 @@ class Config:
     runtime: provider.RuntimeConfig = field(
         default_factory=lambda: provider.RuntimeConfig(
             result_store=result.StoreStrategy.SQLITE,
-            existing_results=provider.ResultStatePolicy.KEEP,
+            existing_results=result.ResultStatePolicy.KEEP,
         ),
     )
     request_timeout: int = 125
-    api_key: str = "env:NVD_API_KEY"
+    api_key: Optional[str] = "env:NVD_API_KEY"  # noqa: UP007
 
     def __post_init__(self) -> None:
-        if self.api_key.startswith("env:"):
+        if self.api_key and self.api_key.startswith("env:"):
             self.api_key = os.environ.get(self.api_key[4:], "")
 
     def __str__(self) -> str:
@@ -44,7 +44,7 @@ class Provider(provider.Provider):
 
         self.logger.debug(f"config: {config}")
 
-        if self.config.runtime.skip_if_exists and config.runtime.existing_results != provider.ResultStatePolicy.KEEP:
+        if self.config.runtime.skip_if_exists and config.runtime.existing_results != result.ResultStatePolicy.KEEP:
             raise ValueError(
                 "if 'skip_if_exists' is set then 'runtime.existing_results' must be 'keep' "
                 "(otherwise incremental updates will fail)",

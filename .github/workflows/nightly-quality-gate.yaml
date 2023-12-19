@@ -3,18 +3,18 @@ on:
   # allow for kicking off quality gate check manually
   workflow_dispatch:
 
-  # run 2 AM (UTC) daily
+  # run 5 AM (UTC) daily
   schedule:
-    - cron:  '0 2 * * *'
+    - cron:  '0 5 * * *'
 
 jobs:
 
   select-providers:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     outputs:
       providers: ${{ steps.determine-providers.outputs.providers }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0
@@ -33,7 +33,7 @@ jobs:
           echo "providers=$content" >> $GITHUB_OUTPUT
 
   validate-provider:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: select-providers
     strategy:
       matrix:
@@ -43,7 +43,7 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0
@@ -65,14 +65,25 @@ jobs:
 
   # note: the name for this check is referenced in release.yaml, do not change here without changing there
   Nightly-Quality-Gate:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: validate-provider
     if: ${{ always() && !cancelled() }}
     steps:
+      # based on https://docs.github.com/en/actions/learn-github-actions/contexts#job-context
+      # the valid result values are: success, failure, cancelled
       - run: |
-          echo "Validations Status: ${{ needs.run-provider-validation.result }}"
-          if [ "${{ needs.run-provider-validation.result }}" == "failure" ]; then
-            echo "Quality gate failed!"
+          echo "Validations Status: ${{ needs.validate-provider.result }}"
+          if [ "${{ needs.validate-provider.result }}" != "success" ]; then
+            echo "🔴 Quality gate FAILED! 😭"
             exit 1
           fi
-          echo "Quality gate passed!"
+          echo "🟢 Quality gate passed!"
+
+      - uses: 8398a7/action-slack@fbd6aa58ba854a740e11a35d0df80cb5d12101d8 #v3.15.1
+        if: ${{ failure() }}
+        with:
+          status: ${{ job.status }}
+          fields: repo,workflow,action,eventName
+          text: "Vunnel nightly quality gate has failed: https://github.com/anchore/vunnel/actions/workflows/nightly-quality-gate.yaml"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_TOOLBOX_WEBHOOK_URL }}

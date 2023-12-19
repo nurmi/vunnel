@@ -1,4 +1,3 @@
-# flake8: noqa
 from __future__ import annotations
 
 import logging
@@ -26,6 +25,15 @@ class GitRevision:
     file: str
 
 
+class UbuntuGitServer503Error(Exception):
+    """Exception raised when the ubuntu git server returns a 503"""
+
+    def __init__(self):
+        super().__init__(
+            "The ubuntu git server is unavailable, try again later or switch to the git protocol endpoint git://git.launchpad.net/ubuntu-cve-tracker",
+        )
+
+
 class GitWrapper:
     __active_retired_filename_regex__ = re.compile(r"(active|retired)/CVE-\S+")
     __cve_id_regex__ = re.compile(r"CVE-\S+")
@@ -36,15 +44,22 @@ class GitWrapper:
     _check_out_cmd_ = "git checkout {branch}"
     _pull_cmd_ = "git pull -f"
     _fetch_cmd_ = "git fetch --all"
+    _clean_cmd_ = "git clean --force -d"
     _reset_cmd_ = "git reset --hard HEAD"
     _pull_ff_only_cmd_ = "git pull --ff-only"
     _write_graph_ = "git commit-graph write --reachable --changed-paths"
     _change_set_cmd_ = "git log --no-renames --no-merges --name-status --format=oneline {from_rev}..{to_rev}"
     _get_rev_content_cmd_ = "git show {sha}:{file}"
     _head_rev_cmd_ = "git rev-parse HEAD"
+    _ubuntu_server_503_message = "error: RPC failed; HTTP 503 curl 22 The requested URL returned error: 503"
 
-    def __init__(
-        self, source: str, branch: str, checkout_dest: str, workspace: str | None = None, logger: logging.Logger | None = None
+    def __init__(  # noqa: PLR0913
+        self,
+        source: str,
+        branch: str,
+        checkout_dest: str,
+        workspace: str | None = None,
+        logger: logging.Logger | None = None,
     ):
         self.src = source
         self.branch = branch
@@ -58,7 +73,7 @@ class GitWrapper:
 
         try:
             out = self._exec_cmd(self._check_cmd_)
-            self.logger.trace("git executable verified using cmd: {}, output: {}".format(self._check_cmd_, out.decode()))
+            self.logger.trace(f"git executable verified using cmd: {self._check_cmd_}, output: {out.decode()}")
         except:
             self.logger.exception('could not find required "git" executable. Please install git on host')
             raise
@@ -71,36 +86,40 @@ class GitWrapper:
 
             cmd = self._is_git_repo_cmd_
             out = self._exec_cmd(cmd, cwd=destination)
-            self.logger.debug("check for git repository, cmd: {}, output: {}".format(cmd, out.decode()))
-        except:
-            self.logger.debug(f"git working tree not found at {destination}")
+            self.logger.debug(f"check for git repository, cmd: {cmd}, output: {out.decode()}")
+        except Exception:
+            self.logger.debug(f"git working tree not found at {destination}", exc_info=True)
             return False
 
         return True
 
-    @utils.retry_with_backoff()
-    def init_repo(self, force=False):
-        if force:
-            if os.path.exists(self.dest):
-                self.logger.debug("deleting existing repository")
-                shutil.rmtree(self.dest, ignore_errors=True)
+    def _delete_repo(self):
+        if os.path.exists(self.dest):
+            self.logger.debug("deleting existing repository")
+            shutil.rmtree(self.dest, ignore_errors=True)
 
-        if self._check(self.dest):
-            self.logger.debug("found git repository at {}".format(self.dest))
-            self.sync_with_upstream()
-            return
-
+    def _clone_repo(self):
         try:
             self.logger.info(f"cloning git repository {self.src} branch {self.branch} to {self.dest}")
-
             cmd = self._clone_cmd_.format(src=self.src, dest=self.dest, branch=self.branch)
             out = self._exec_cmd(cmd)
-
-            self.logger.debug("initialized git repo, cmd: {}, output: {}".format(cmd, out.decode()))
+            self.logger.debug(f"initialized git repo, cmd: {cmd}, output: {out.decode()}")
             self._write_graph()
         except:
             self.logger.exception(f"failed to clone git repository {self.src} branch {self.branch} to {self.dest}")
             raise
+
+    @utils.retry_with_backoff()
+    def init_repo(self, force=False):
+        if force:
+            self._delete_repo()
+
+        if self._check(self.dest):
+            self.logger.debug(f"found git repository at {self.dest}")
+            self.sync_with_upstream()
+            return
+
+        self._clone_repo()
 
     def parse_full_cve_revision_history(self, git_log_output: str) -> dict[str, list[GitRevision]]:
         hist = {}
@@ -126,13 +145,30 @@ class GitWrapper:
         try:
             try:
                 self._exec_cmd(self._set_remote_cmd_.format(src=self.src), cwd=self.dest)
+
+                # Cleanup any untracked files which might be present and reset any changes on the current branch
+                try:
+                    self._exec_cmd(self._clean_cmd_, cwd=self.dest)
+                    self._exec_cmd(self._reset_cmd_, cwd=self.dest)
+                except Exception:
+                    self.logger.info("failed to clean and reset", exc_info=True)
+
                 self._exec_cmd(self._check_out_cmd_.format(branch=self.branch), cwd=self.dest)
-                self._exec_cmd(self._reset_cmd_, cwd=self.dest)
-            except:  # nosec
-                pass
-            out = self._exec_cmd(self._pull_ff_only_cmd_, cwd=self.dest)
-            self.logger.debug("synced with upstream git repo, output: {}".format(out.decode()))
-            self._write_graph()
+            except Exception:
+                self.logger.info(f"failed to run git checkout of {self.branch}", exc_info=True)
+
+            try:
+                out = self._exec_cmd(self._pull_ff_only_cmd_, cwd=self.dest)
+                self.logger.debug(f"synced with upstream git repo, output: {out.decode()}")
+                self._write_graph()
+            except UbuntuGitServer503Error:
+                raise
+            except Exception:
+                # if something other than 503 occurred at this point just remove the repo and re-clone
+                self.logger.exception("unexpected exception syncing with upstream; will delete and re-clone")
+                self._delete_repo()
+                self._clone_repo()
+
         except:
             self.logger.exception("failed to git pull")
             raise
@@ -151,7 +187,7 @@ class GitWrapper:
 
     def get_merged_change_set(self, from_rev: str, to_rev: str | None = None) -> tuple[dict[str, str], dict[str, str]]:
         try:
-            self.logger.trace("fetching changes set between revisions {} - {}".format(from_rev, to_rev))
+            self.logger.trace(f"fetching changes set between revisions {from_rev} - {to_rev}")
             cmd = self._change_set_cmd_.format(from_rev=from_rev, to_rev=to_rev if to_rev else "")
             out = self._exec_cmd(cmd, cwd=self.dest)
             commit_list = self._parse_log(out.decode())
@@ -162,10 +198,10 @@ class GitWrapper:
 
     def get_revision_history(self, cve_id: str, file_path: str, from_rev: str | None = None) -> list[GitRevision]:
         try:
-            self.logger.trace("fetching revision history for {}".format(file_path))
+            self.logger.trace(f"fetching revision history for {file_path}")
             return self.cve_rev_history.get(cve_id, [])
         except:
-            self.logger.exception("failed to fetch the revision history for {}".format(file_path))
+            self.logger.exception(f"failed to fetch the revision history for {file_path}")
             raise
 
     def get_content(self, git_rev: GitRevision) -> list[str]:
@@ -176,14 +212,14 @@ class GitWrapper:
             cmd = self._get_rev_content_cmd_.format(sha=git_rev.sha, file=git_rev.file)
             out = self._exec_cmd(cmd, cwd=self.dest)
             return out.decode().splitlines()
-        except:
-            self.logger.exception("failed to get content for {} from git commit {}".format(git_rev.file, git_rev.sha))
+        except Exception:
+            self.logger.exception(f"failed to get content for {git_rev.file} from git commit {git_rev.sha}")
 
     def get_current_rev(self) -> str:
         try:
             rev = self._exec_cmd(self._head_rev_cmd_, cwd=self.dest)
             return rev.decode().strip() if isinstance(rev, bytes) else rev
-        except:
+        except Exception:
             self.logger.exception("unable to get current git revision")
 
     @staticmethod
@@ -336,7 +372,7 @@ class GitWrapper:
                         updated[cve_id] = components[2]
                 else:
                     # either not a commit line or an irrelevant file, ignore it
-                    self.logger.debug("skipping unknown change symbol {}".format(components[0]))
+                    self.logger.debug(f"skipping unknown change symbol {components[0]}")
             else:
                 # not a match
                 pass
@@ -344,8 +380,7 @@ class GitWrapper:
         if updated or deleted:
             deleted = {key: value for key, value in deleted.items() if key not in updated}
             return GitCommitSummary(sha=commit_lines[0][0], updated=updated, deleted=deleted)
-        else:
-            return None
+        return None
 
     def _exec_cmd(self, cmd, *args, **kwargs) -> bytes:
         """
@@ -356,9 +391,14 @@ class GitWrapper:
         :return:
         """
         try:
-            self.logger.trace("running: {}".format(cmd))
+            self.logger.trace(f"running: {cmd}")
             cmd_list = shlex.split(cmd)
-            return subprocess.check_output(cmd_list, *args, **kwargs)  # nosec
+            # S603 disable exaplanation: running git commands by design
+            return subprocess.check_output(cmd_list, *args, **kwargs, stderr=subprocess.PIPE)  # noqa: S603
         except Exception as e:
-            self.logger.exception("error executing command: {}".format(cmd))
+            self.logger.exception(f"error executing command: {cmd}")
+
+            if isinstance(e, subprocess.CalledProcessError) and e.stderr and self._ubuntu_server_503_message in e.stderr.decode():
+                raise UbuntuGitServer503Error from e
+
             raise e

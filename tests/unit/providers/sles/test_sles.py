@@ -148,6 +148,8 @@ class TestSLESParser:
                         NamespaceName="sles:15",
                         VersionFormat="rpm",
                         Version="0:4.12.14-150.72.1",
+                        Module=None,
+                        VendorAdvisory=None,
                     )
                 ],
                 Metadata={},
@@ -177,6 +179,8 @@ class TestSLESParser:
                         NamespaceName="sles:15.1",
                         VersionFormat="rpm",
                         Version="0:4.12.14-197.89.2",
+                        Module=None,
+                        VendorAdvisory=None,
                     )
                 ],
                 Metadata={},
@@ -277,14 +281,6 @@ class TestSLESParser:
         assert actual == parsed_vulnerabilities
 
 
-@pytest.fixture
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
-
-
 def test_provider_schema(helpers, disable_get_requests, monkeypatch):
     workspace = helpers.provider_workspace_helper(name=Provider.name())
 
@@ -304,3 +300,26 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
 
     assert 2 == workspace.num_result_entries()
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(name=Provider.name())
+
+    c = Config()
+    # keep all of the default values for the result store, but override the strategy
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(
+        root=workspace.root,
+        config=c,
+    )
+
+    mock_data_path = helpers.local_dir("test-fixtures/suse_truncated.xml")
+    shutil.copy(mock_data_path, workspace.input_dir / "suse-linux-enterprise-server-15.xml")
+
+    def mock_download(self, *args, **kwargs):
+        return mock_data_path
+
+    monkeypatch.setattr(p.parser, "_download", mock_download)
+    p.update(None)
+
+    workspace.assert_result_snapshots()

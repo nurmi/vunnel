@@ -18,21 +18,25 @@ import click
 import mergedeep
 import requests
 import yaml
-from dataclass_wizard import DumpMeta, asdict, fromdict
+from mashumaro.mixins.dict import DataClassDictMixin
 from yardstick.cli.config import (
-    Application,
     ResultSet,
     ScanMatrix,
     Tool,
 )
+from yardstick.cli.config import Application as YardstickApplication
 
 BIN_DIR = "./bin"
 CLONE_DIR = f"{BIN_DIR}/grype-db-src"
 GRYPE_DB = f"{BIN_DIR}/grype-db"
 
 
+class Application(YardstickApplication, DataClassDictMixin):
+    pass
+
+
 @dataclass
-class ConfigurationState:
+class ConfigurationState(DataClassDictMixin):
     uncached_providers: list[str] = field(default_factory=list)
     cached_providers: list[str] = field(default_factory=list)
 
@@ -56,6 +60,7 @@ class Test:
     images: list[str] = field(default_factory=list)
     additional_providers: list[AdditionalProvider] = field(default_factory=list)
     additional_trigger_globs: list[str] = field(default_factory=list)
+    expected_namespaces: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -64,29 +69,29 @@ class GrypeDB:
 
 
 @dataclass
-class Config:
+class Config(DataClassDictMixin):
     yardstick: Yardstick = field(default_factory=Yardstick)
     grype_db: GrypeDB = field(default_factory=GrypeDB)
     tests: list[Test] = field(default_factory=list)
 
     @classmethod
-    def load(cls, path: str = "config.yaml") -> "Config":
+    def load(cls, path: str = "") -> "Config":
+        if not path:
+            path = "config.yaml"
+
         try:
             with open(path, encoding="utf-8") as f:
                 app_object = yaml.safe_load(f.read()) or {}
                 # we need a full default application config first then merge the loaded config on top.
-                # Why? dataclass_wizard.fromdict() will create instances from the dataclass default
+                # Why? cls.from_dict() will create instances from the dataclass default
                 # and NOT the field definition from the container. So it is possible to specify a
                 # single field in the config and all other fields would be set to the default value
                 # based on the dataclass definition and not any field(default_factory=...) hints
                 # from the containing class.
-                instance = asdict(cls())
+                instance = cls().to_dict()
 
                 mergedeep.merge(instance, app_object)
-                cfg = fromdict(
-                    cls,
-                    instance,
-                )
+                cfg = cls.from_dict(instance)
                 if cfg is None:
                     raise FileNotFoundError("parsed empty config")
         except FileNotFoundError:
@@ -202,7 +207,6 @@ def cli(ctx, verbose: bool, config_path: str):
 def show_config(cfg: Config):
     logging.info("showing application config")
 
-    # noqa
     class IndentDumper(yaml.Dumper):
         def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:  # noqa: ARG002
             return super().increase_indent(flow, False)
@@ -259,7 +263,7 @@ def write_config_state(cached_providers: list[str], uncached_providers: list[str
     logging.info(f"writing configuration state to {path!r}")
 
     with open(path, "w") as f:
-        f.write(yaml.dump(asdict(ConfigurationState(cached_providers=cached_providers, uncached_providers=uncached_providers))))
+        f.write(yaml.dump(ConfigurationState(cached_providers=cached_providers, uncached_providers=uncached_providers).to_dict()))
 
 
 def read_config_state(path: str = ".state.yaml"):
@@ -267,7 +271,7 @@ def read_config_state(path: str = ".state.yaml"):
 
     try:
         with open(path) as f:
-            return fromdict(ConfigurationState, yaml.safe_load(f.read()))
+            return ConfigurationState.from_dict(yaml.safe_load(f.read()))
     except FileNotFoundError:
         return ConfigurationState()
 
@@ -275,10 +279,8 @@ def read_config_state(path: str = ".state.yaml"):
 def write_yardstick_config(cfg: Application, path: str = ".yardstick.yaml"):
     logging.info(f"writing yardstick config to {path!r}")
 
-    DumpMeta(key_transform="SNAKE", skip_defaults=True).bind_to(Application)
-
     with open(path, "w") as f:
-        f.write(yaml.dump(asdict(cfg)))
+        f.write(yaml.dump(cfg.to_dict()))
 
 
 def write_grype_db_config(providers: set[str], path: str = ".grype-db.yaml"):
@@ -322,6 +324,29 @@ def changes():
     return changed_files
 
 
+def yardstick_version_changed():
+    logging.info("determining whether yardstick version changed")
+
+    base_ref = os.environ.get("GITHUB_BASE_REF", "origin/main")
+    if not base_ref:
+        base_ref = "origin/main"
+
+    if "/" not in base_ref:
+        base_ref = f"origin/{base_ref}"
+
+    # get list of files changed with git diff
+    changes = subprocess.check_output(["git", "diff", base_ref]).decode("utf-8").splitlines()
+    for line in changes:
+        if not line.strip().startswith(("-", "+")):
+            # this line is in the output of `git diff`, but is just context, not a change
+            continue
+
+        if 'git = "https://github.com/anchore/yardstick"' in line:
+            return True
+
+    return False
+
+
 @cli.command(name="select-providers", help="determine the providers to test from a file changeset")
 @click.option("--json", "-j", "output_json", help="output result as json list (useful for CI)", is_flag=True)
 @click.pass_obj
@@ -329,24 +354,38 @@ def select_providers(cfg: Config, output_json: bool):
     changed_files = changes()
 
     selected_providers = set()
-    for test in cfg.tests:
-        if not test.provider:
-            continue
 
-        search_globs = [f"src/vunnel/providers/{test.provider}/**"]
+    # look for gate changes, if any, then run all providers
+    gate_globs = ["tests/quality/*.py", "tests/quality/*.yaml", "tests/quality/vulnerability-match-labels/**"]
 
-        for additional_provider in test.additional_providers:
-            search_globs.append(f"src/vunnel/providers/{additional_provider.name}/**")
+    for search_glob in gate_globs:
+        for changed_file in changed_files:
+            if fnmatch.fnmatch(changed_file, search_glob):
+                selected_providers = {test.provider for test in cfg.tests}
 
-        for g in test.additional_trigger_globs:
-            search_globs.append(g)
+    if yardstick_version_changed():
+        selected_providers = {test.provider for test in cfg.tests}
 
-        for search_glob in search_globs:
-            for changed_file in changed_files:
-                if fnmatch.fnmatch(changed_file, search_glob):
-                    logging.debug(f"provider {test.provider} is affected by file change {changed_file}")
-                    selected_providers.add(test.provider)
-                    break
+    if not selected_providers:
+        # there are no gate changes, so look for provider-specific changes
+        for test in cfg.tests:
+            if not test.provider:
+                continue
+
+            search_globs = [f"src/vunnel/providers/{test.provider}/**"]
+
+            for additional_provider in test.additional_providers:
+                search_globs.append(f"src/vunnel/providers/{additional_provider.name}/**")
+
+            for g in test.additional_trigger_globs:
+                search_globs.append(g)
+
+            for search_glob in search_globs:
+                for changed_file in changed_files:
+                    if fnmatch.fnmatch(changed_file, search_glob):
+                        logging.debug(f"provider {test.provider} is affected by file change {changed_file}")
+                        selected_providers.add(test.provider)
+                        break
 
     sorted_providers = sorted(selected_providers)
 

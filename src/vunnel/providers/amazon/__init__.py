@@ -14,11 +14,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class Config:
-    security_advisories: dict[Any, str] = field(default_factory=lambda: amazon_security_advisories)
+    security_advisories: dict[Any, str] = field(default_factory=lambda: amazon_security_advisories.copy())
     runtime: provider.RuntimeConfig = field(
         default_factory=lambda: provider.RuntimeConfig(
             result_store=result.StoreStrategy.SQLITE,
-            existing_results=provider.ResultStatePolicy.DELETE_BEFORE_WRITE,
+            existing_results=result.ResultStatePolicy.DELETE_BEFORE_WRITE,
         ),
     )
     request_timeout: int = 125

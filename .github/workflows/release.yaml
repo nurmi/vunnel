@@ -6,12 +6,15 @@ on:
         description: tag the latest commit on main with the given version (prefixed with v)
         required: true
 
-jobs:
+permissions:
+  contents: read
 
+jobs:
   quality-gate:
-    runs-on: ubuntu-20.04
+    environment: release
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
 
       - name: Check if tag already exists
         # note: this will fail if the tag already exists
@@ -25,17 +28,26 @@ jobs:
           git fetch origin main
           git merge-base --is-ancestor ${GITHUB_REF##*/} origin/main && echo "${GITHUB_REF##*/} is a commit on main!"
 
-      - name: Check validation results
-        uses: fountainhead/action-wait-for-check@v1.1.0
-        id: validations
+      - name: Check static analysis results
+        uses: fountainhead/action-wait-for-check@297be350cf8393728ea4d4b39435c7d7ae167c93 #v1.1.1
+        id: static-analysis
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # This check name is defined as the github action job name (in .github/workflows/validations.yaml)
-          checkName: "Validations"
+          checkName: "Static Analysis"
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check test results
+        uses: fountainhead/action-wait-for-check@297be350cf8393728ea4d4b39435c7d7ae167c93 #v1.1.1
+        id: test
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # This check name is defined as the github action job name (in .github/workflows/validations.yaml)
+          checkName: "Test Gate"
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check nightly quality gate results
-        uses: fountainhead/action-wait-for-check@v1.1.0
+        uses: fountainhead/action-wait-for-check@297be350cf8393728ea4d4b39435c7d7ae167c93 #v1.1.0
         id: nightly-quality-gate
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -47,31 +59,33 @@ jobs:
           intervalSeconds: 3
 
       - name: Release quality gate
-        if: steps.validations.conclusion != 'success' || steps.nightly-quality-gate.conclusion != 'success'
+        if: steps.static-analysis.conclusion != 'success' || steps.test.conclusion != 'success' || steps.nightly-quality-gate.conclusion != 'success'
         run: |
-          echo "Validations Status: ${{ steps.validations.conclusion }}"
+          echo "Static Analysis Status: ${{ steps.static-analysis.conclusion }}"
+          echo "Test Status: ${{ steps.test.conclusion }}"
           echo "Nightly Quality Gate Status: ${{ steps.nightly-quality-gate.conclusion }}"
           false
 
   tag:
     needs:
       - quality-gate
-    runs-on: ubuntu-20.04
-    environment: release
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
       packages: write
       issues: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0
 
       - name: Tag release
         run: |
-          git tag ${{ github.event.inputs.version }}
+          git config --global user.name "anchoreci"
+          git config --global user.email "anchoreci@users.noreply.github.com"
+          git tag -a ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
           git push origin --tags
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,12 +93,11 @@ jobs:
   release-pypi:
     needs:
       - tag
-    runs-on: ubuntu-20.04
-    environment: release
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0
@@ -100,13 +113,12 @@ jobs:
   release-docker:
     needs:
       - tag
-    runs-on: ubuntu-20.04
-    environment: release
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0
@@ -128,15 +140,14 @@ jobs:
   release-github:
     needs:
       - tag
-    runs-on: ubuntu-20.04
-    environment: release
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
       packages: write
       issues: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 #v4.1.1
         with:
           # in order to properly resolve the version from git
           fetch-depth: 0

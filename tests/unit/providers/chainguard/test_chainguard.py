@@ -10,14 +10,6 @@ from vunnel.providers.chainguard import Config, Provider
 from vunnel.providers.wolfi import parser
 
 
-@pytest.fixture()
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
-
-
 def test_provider_schema(helpers, disable_get_requests):
     workspace = helpers.provider_workspace_helper(name=Provider.name())
 
@@ -32,3 +24,27 @@ def test_provider_schema(helpers, disable_get_requests):
 
     assert workspace.num_result_entries() == 189
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
+
+    c = Config()
+    # keep all of the default values for the result store, but override the strategy
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(
+        root=workspace.root,
+        config=c,
+    )
+
+    def mock_download():
+        return None
+
+    monkeypatch.setattr(p.parser, "_download", mock_download)
+
+    p.update(None)
+
+    workspace.assert_result_snapshots()

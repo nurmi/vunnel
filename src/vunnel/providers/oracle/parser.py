@@ -5,10 +5,7 @@ import logging
 import os
 import re
 
-import requests
-
-from vunnel import utils
-from vunnel.utils import rpm
+from vunnel.utils import http, rpm
 from vunnel.utils.oval_parser import Config, parse
 
 # One time initialization of driver specific configuration
@@ -65,11 +62,10 @@ class Parser:
     def urls(self):
         return [self._url_]
 
-    @utils.retry_with_backoff()
     def _download(self):
         try:
             self.logger.info(f"downloading ELSA from {self._url_}")
-            r = requests.get(self._url_, stream=True, timeout=self.download_timeout)
+            r = http.get(self._url_, self.logger, stream=True, timeout=self.download_timeout)
             if r.status_code != 200:
                 raise Exception(f"GET {self._url_} failed with HTTP error {r.status_code}")
 
@@ -116,7 +112,7 @@ class KspliceFilterer:
         :param version:
         :return:
         """
-        epoch, version, release = rpm.split_fullversion(version)  # noqa
+        epoch, version, release = rpm.split_fullversion(version)
         return cls.ksplice_regex.match(release) is not None
 
     def filter(self, vuln_dict: dict) -> dict:  # noqa: A003
@@ -135,10 +131,13 @@ class KspliceFilterer:
         :param vuln_dict: dict of vulns where key is distro and version and value is the list of vulns for that version
         :return:
         """
-        for version, vuln in vuln_dict.values():  # noqa
+        for version, vuln in vuln_dict.values():  # noqa: B007
             fixes = vuln.get("Vulnerability", {}).get("FixedIn", [])
             if fixes:
                 pre_filter_fix_count = len(fixes)
+
+                # sort dictionary by "Name" and "Version" keys
+                fixes = sorted(fixes, key=lambda k: (k["Name"], k["Version"]))
 
                 vuln["Vulnerability"]["FixedIn"] = [fix for fix in fixes if not self._is_ksplice_version(fix.get("Version", ""))]
 

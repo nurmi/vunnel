@@ -15,9 +15,9 @@ GLOW = $(TEMP_DIR)/glow
 PUBLISH_CMD = poetry publish --build -n
 
 # Tool versions #################################
-CHRONICLE_VERSION = v0.6.0
+CHRONICLE_VERSION = v0.8.0
 GLOW_VERSION = v1.4.1
-CRANE_VERSION = v0.12.1
+CRANE_VERSION = v0.16.1
 
 # Formatting variables #################################
 BOLD := $(shell tput -T linux bold)
@@ -82,7 +82,7 @@ dev:  ## Get a development shell with locally editable grype, grype-db, and vunn
 
 .PHONY: build-grype
 build-grype: $(BIN_DIR) ## Build grype for local development
-	@cd $(GRYPE_PATH) && go build -o $(ABS_BIN_DIR)/grype .
+	@cd $(GRYPE_PATH) && go build -o $(ABS_BIN_DIR)/grype ./cmd/grype
 
 .PHONY: build-grype-db
 build-grype-db: $(BIN_DIR) ## Build grype-db for local development
@@ -122,6 +122,10 @@ check-types: virtual-env-check  ## Run type checks (mypy)
 .PHONY: unit
 unit: virtual-env-check  ## Run unit tests
 	pytest --cov-report html --cov vunnel -v tests/unit/
+
+.PHONY: unit-matrix
+unit-matrix: virtual-env-check  ## Run unit tests for all supported python versions
+	tox
 
 
 ## Build-related targets #################################

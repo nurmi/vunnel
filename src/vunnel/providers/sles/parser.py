@@ -1,4 +1,3 @@
-# flake8: noqa
 from __future__ import annotations
 
 import logging
@@ -7,12 +6,12 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException
+from typing import TYPE_CHECKING
 
-import requests
 from cvss import CVSS3
 from cvss.exceptions import CVSS3MalformedError
 
-from vunnel import utils
+from vunnel.utils import http
 from vunnel.utils.oval_v2 import (
     ArtifactParser,
     Impact,
@@ -26,7 +25,9 @@ from vunnel.utils.oval_v2 import (
     iter_parse_vulnerability_file,
 )
 from vunnel.utils.vulnerability import CVSS, CVSSBaseMetrics, FixedIn, Vulnerability
-from vunnel.workspace import Workspace
+
+if TYPE_CHECKING:
+    from vunnel.workspace import Workspace
 
 namespace = "sles"
 
@@ -54,7 +55,11 @@ class Parser:
     logger = logging.getLogger("sles-parser")
 
     def __init__(
-        self, workspace: Workspace, allow_versions: list[str], download_timeout: int = 125, logger: logging.Logger | None = None
+        self,
+        workspace: Workspace,
+        allow_versions: list[str],
+        download_timeout: int = 125,
+        logger: logging.Logger | None = None,
     ):
         self.oval_dir_path = os.path.join(workspace.input_path, self.__source_dir_path__, self.__oval_dir_path__)
         self.allow_versions = allow_versions
@@ -67,7 +72,6 @@ class Parser:
         # this is pretty odd, but there are classmethods that need logging
         Parser.logger = logger
 
-    @utils.retry_with_backoff()
     def _download(self, major_version: str) -> str:
         if not os.path.exists(self.oval_dir_path):
             self.logger.debug(f"creating workspace for OVAL source data at {self.oval_dir_path}")
@@ -82,15 +86,7 @@ class Parser:
             major_version,
             download_url,
         )
-        r = requests.get(download_url, stream=True, timeout=self.download_timeout)
-        if r.status_code != 200:
-            self.logger.error(
-                "GET %s failed with HTTP %s. Unable to download OVAL file for SLES %s",
-                download_url,
-                r.status_code,
-                major_version,
-            )
-            r.raise_for_status()
+        r = http.get(download_url, self.logger, stream=True, timeout=self.download_timeout)
 
         with open(oval_file_path, "wb") as fp:
             for chunk in r.iter_content(chunk_size=1024):
@@ -102,7 +98,11 @@ class Parser:
 
     @classmethod
     def _get_name_and_version_from_test(
-        cls, test_id: str, tests_dict: dict, artifacts_dict: dict, versions_dict: dict
+        cls,
+        test_id: str,
+        tests_dict: dict,
+        artifacts_dict: dict,
+        versions_dict: dict,
     ) -> tuple[str | None, str | None]:
         name = None
         version = None
@@ -214,7 +214,7 @@ class Parser:
         return results
 
     @classmethod
-    def _transform_oval_vulnerabilities(cls, major_version: str, parsed_dict: dict) -> list[Vulnerability]:
+    def _transform_oval_vulnerabilities(cls, major_version: str, parsed_dict: dict) -> list[Vulnerability]:  # noqa: C901
         cls.logger.info(
             "generating normalized vulnerabilities from oval vulnerabilities for %s",
             major_version,
@@ -229,7 +229,7 @@ class Parser:
         if not vulnerabilities_dict or not tests_dict or not artifacts_dict or not versions_dict:
             return results
 
-        for identity, vulnerability_obj in vulnerabilities_dict.items():  # noqa
+        for identity, vulnerability_obj in vulnerabilities_dict.items():  # noqa: B007
             # version->release->feed map
             version_release_feed = defaultdict()
 
@@ -295,7 +295,9 @@ class Parser:
                             NamespaceName=feed_ns,
                             VersionFormat="rpm",
                             Version=pkg_version,
-                        )
+                            Module=None,
+                            VendorAdvisory=None,
+                        ),
                     )
 
                 # create the normalized vulnerability
@@ -377,17 +379,15 @@ class SLESVulnerabilityParser(VulnerabilityParser):
             identity = xml_element.attrib["id"]
 
             oval_ns_match = re.search(config.namespace_regex, xml_element.tag)
-            if oval_ns_match and len(oval_ns_match.groups()) > 0:
-                oval_ns = oval_ns_match.group(1)
-            else:
-                oval_ns = ""
+            oval_ns = oval_ns_match.group(1) if oval_ns_match and len(oval_ns_match.groups()) > 0 else ""
 
             # def_version = xml_element.attrib["version"]
             name = xml_element.find(config.title_xpath_query.format(oval_ns)).text
             severity_element = xml_element.find(config.severity_xpath_query.format(oval_ns))
             try:
                 severity = config.severity_map.get(severity_element.text.lower())
-            except:
+            except Exception:
+                cls.logger.info("unknown severity due to exception", exc_info=True)
                 severity = "Unknown"
                 # TODO temporary hack! sles 15 data was tripping this, figure out a better way
             description = xml_element.find(config.description_xpath_query.format(oval_ns)).text.strip()
@@ -406,7 +406,7 @@ class SLESVulnerabilityParser(VulnerabilityParser):
                         _, vector = cvss_v3.split("/", 1)
                     cvss.append(vector)
 
-            impact = VulnerabilityParser._parse_criteria(xml_element, oval_ns, config)
+            impact = VulnerabilityParser._parse_criteria(xml_element, oval_ns, config)  # noqa: SLF001
         except Exception:
             cls.logger.exception("ignoring error and skip parsing vulnerability definition element")
             identity = name = severity = description = link = None

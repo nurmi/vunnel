@@ -1,15 +1,18 @@
-# flake8: noqa
 from __future__ import annotations
 
 import datetime
 import logging
 import urllib.parse
-from typing import Any, Generator
+from typing import TYPE_CHECKING, Any
 
 import orjson
-import requests
 
-from vunnel import utils
+from vunnel.utils import http
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    import requests
 
 
 class NvdAPI:
@@ -58,7 +61,7 @@ class NvdAPI:
             message="fetching CVE history",
         )
 
-    def cve(
+    def cve(  # noqa: PLR0913
         self,
         cve_id: str | None = None,
         results_per_page: int
@@ -99,7 +102,10 @@ class NvdAPI:
         )
 
     def _request_all_pages(
-        self, url: str, parameters: dict[str, str], message: str = "fetching results"
+        self,
+        url: str,
+        parameters: dict[str, str],
+        message: str = "fetching results",
     ) -> Generator[dict[str, Any], Any, None]:
         headers = {
             "content-type": "application/json",
@@ -114,7 +120,7 @@ class NvdAPI:
 
         payload = orjson.loads(response.text)
         if "message" in payload:
-            raise RuntimeError(f"API error: {response['message']}")
+            raise RuntimeError(f"API error: {payload['message']}")
 
         yield payload
 
@@ -139,15 +145,15 @@ class NvdAPI:
 
             index += results_per_page
 
-    @utils.retry_with_backoff()
     def _request(self, url: str, parameters: dict[str, str], headers: dict[str, str]) -> requests.Response:
         # this is to prevent from encoding the ':' in any timestamps passed
         # (e.g. prevent pubStartDate=2002-01-01T00%3A00%3A00 , want pubStartDate=2002-01-01T00:00:00)
         payload_str = urllib.parse.urlencode(parameters, safe=":")
 
-        response = requests.get(url, params=payload_str, headers=headers, timeout=self.timeout)
+        # NVD rate-limiting is detailed at https://nvd.nist.gov/developers/start-here and currently resets on a 30 second
+        # rolling window, so setting retry to start trying again after 30 seconds.
+        response = http.get(url, self.logger, backoff_in_seconds=30, params=payload_str, headers=headers, timeout=self.timeout)
         response.encoding = "utf-8"
-        response.raise_for_status()
 
         return response
 
@@ -155,4 +161,4 @@ class NvdAPI:
 def clean_date(dt: datetime.datetime | str) -> str:
     if isinstance(dt, datetime.datetime):
         return dt.isoformat()
-    return datetime.datetime.strptime(dt, "%Y-%m-%d %H:%M").isoformat()
+    return datetime.datetime.strptime(dt, "%Y-%m-%d %H:%M").isoformat()  # noqa: DTZ007

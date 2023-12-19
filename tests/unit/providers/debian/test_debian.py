@@ -2,18 +2,11 @@ from __future__ import annotations
 
 import os.path
 import shutil
+from unittest.mock import MagicMock
 
 import pytest
 from vunnel import result, workspace
 from vunnel.providers.debian import Config, Provider, parser
-
-
-@pytest.fixture()
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
 
 
 class TestParser:
@@ -68,6 +61,7 @@ class TestParser:
 
     def test_normalize_json(self, tmpdir, helpers, disable_get_requests):
         subject = parser.Parser(workspace=workspace.Workspace(tmpdir, "test", create=True))
+        subject.logger = MagicMock()
 
         dsa_mock_data_path = helpers.local_dir(self._sample_dsa_data_)
         json_mock_data_path = helpers.local_dir(self._sample_json_data_)
@@ -88,6 +82,7 @@ class TestParser:
             assert all(x.get("Vulnerability", {}).get("Name") for x in vuln_dict.values())
 
             assert all(x.get("Vulnerability", {}).get("Description") is not None for x in vuln_dict.values())
+        assert not subject.logger.exception.called, "no exceptions should be logged"
 
     def test_get_legacy_records(self, tmpdir, helpers, disable_get_requests):
         subject = parser.Parser(workspace=workspace.Workspace(tmpdir, "test", create=True))
@@ -113,17 +108,18 @@ class TestParser:
 
 
 def test_provider_schema(helpers, disable_get_requests, monkeypatch):
-    workspace = helpers.provider_workspace_helper(name=Provider.name())
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
 
     c = Config()
+    # keep all of the default values for the result store, but override the strategy
     c.runtime.result_store = result.StoreStrategy.FLAT_FILE
     p = Provider(
         root=workspace.root,
         config=c,
     )
-
-    mock_data_path = helpers.local_dir("test-fixtures/input")
-    shutil.copytree(mock_data_path, workspace.input_dir, dirs_exist_ok=True)
 
     def mock_download():
         return None
@@ -137,3 +133,28 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
     expected = 38
     assert workspace.num_result_entries() == expected
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(
+        name=Provider.name(),
+        input_fixture="test-fixtures/input",
+    )
+
+    c = Config()
+    # keep all of the default values for the result store, but override the strategy
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(
+        root=workspace.root,
+        config=c,
+    )
+
+    def mock_download():
+        return None
+
+    monkeypatch.setattr(p.parser, "_download_json", mock_download)
+    monkeypatch.setattr(p.parser, "_download_dsa", mock_download)
+
+    p.update(None)
+
+    workspace.assert_result_snapshots()

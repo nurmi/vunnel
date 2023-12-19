@@ -7,10 +7,8 @@ from collections import namedtuple
 from html.parser import HTMLParser
 
 import defusedxml.ElementTree as ET
-import requests
 
-from vunnel import utils
-from vunnel.utils import rpm
+from vunnel.utils import http, rpm
 
 namespace = "amzn"
 
@@ -48,17 +46,13 @@ class Parser:
             logger = logging.getLogger(self.__class__.__name__)
         self.logger = logger
 
-    @utils.retry_with_backoff()
     def _download_rss(self, rss_url, rss_file):
         try:
             self.logger.info(f"downloading amazon security advisory from {rss_url}")
             self.urls.append(rss_url)
-            r = requests.get(rss_url, timeout=self.download_timeout)
-            if r.status_code == 200:
-                with open(rss_file, "w", encoding="utf-8") as fp:
-                    fp.write(r.text)
-            else:
-                raise Exception(f"GET {rss_url} failed with HTTP error {r.status_code}")
+            r = http.get(rss_url, self.logger, timeout=self.download_timeout)
+            with open(rss_file, "w", encoding="utf-8") as fp:
+                fp.write(r.text)
         except Exception:
             self.logger.exception("error downloading amazon linux vulnerability feeds")
             raise
@@ -89,25 +83,20 @@ class Parser:
             if not processing and event == "end":
                 element.clear()
 
-        return alas_summaries
+        return sorted(alas_summaries)
 
-    @utils.retry_with_backoff()
     def _get_alas_html(self, alas_url, alas_file, skip_if_exists=True):
         if skip_if_exists and os.path.exists(alas_file):  # read alas from disk if its available
             self.logger.debug(f"loading existing ALAS from {alas_file}")
             with open(alas_file, encoding="utf-8") as fp:
                 content = fp.read()
-            return content
-
+            return content  # noqa: RET504
         try:
-            self.logger.debug(f"downloading ALAS from {alas_url}")
-            r = requests.get(alas_url, timeout=self.download_timeout)
-            if r.status_code == 200:
-                content = r.text
-                with open(alas_file, "w", encoding="utf-8") as fp:
-                    fp.write(content)
-                return content
-            raise Exception(f"GET {alas_url} failed with HTTP error {r.status_code}")
+            r = http.get(alas_url, self.logger, timeout=self.download_timeout)
+            content = r.text
+            with open(alas_file, "w", encoding="utf-8") as fp:
+                fp.write(content)
+            return content
         except Exception:
             self.logger.exception(f"error downloading data from {alas_url}")
             raise
@@ -120,7 +109,7 @@ class Parser:
         if not pkg.endswith(".rpm"):
             pkg = pkg + ".rpm"
 
-        name, version, release, epoch, arch = rpm.split_rpm_filename(pkg)  # noqa
+        name, version, release, epoch, arch = rpm.split_rpm_filename(pkg)
 
         if release:
             return AlasFixedIn(pkg=name, ver=(version + "-" + release))
@@ -154,19 +143,22 @@ class Parser:
                 # split the package name and version of the fixed in packages and construct a set
                 fixed_in = {self.get_package_name_version(pkg_name) for pkg_name in parser.fixes}
 
+                # concat the descriptions paragraph
+                description = "".join(parser.issue_overview_text)
+
                 # construct a vulnerability object and yield it
-                yield map_to_vulnerability(version, alas, fixed_in)
+                yield map_to_vulnerability(version, alas, fixed_in, description)
 
 
 class JsonifierMixin:
     def json(self):
         jsonified = {}
-        for k, v in vars(self).items():
+        for k, v in sorted(vars(self).items()):
             if k[0] != "_":
                 if isinstance(v, (list, set)):
                     jsonified[k] = [x.json() if hasattr(x, "json") and callable(x.json) else x for x in v]
                 elif isinstance(v, dict):
-                    jsonified[k] = {x: y.json() if hasattr(y, "json") and callable(y.json) else y for x, y in v.items()}
+                    jsonified[k] = {x: y.json() if hasattr(y, "json") and callable(y.json) else y for x, y in sorted(v.items())}
                 elif hasattr(v, "json"):
                     jsonified[k] = v.json()
                 else:
@@ -207,10 +199,13 @@ class FixedIn(JsonifierMixin):
 
 class PackagesHTMLParser(HTMLParser):
     _new_packages_tuple_ = ("id", "new_packages")
-    _arch_list_ = ["x86_64:", "noarch:", "src:"]
+    _arch_list_ = ["x86_64:", "noarch:", "src:"]  # noqa: RUF012
 
     def __init__(self):
         self.fixes = []
+        self.issue_overview_text = []
+        self.issue_overview_tag = None
+        self.issue_overview_hit = False
         self.fix_tag = None
         self.fix_hit = False
         self.arch_hit = False
@@ -221,6 +216,9 @@ class PackagesHTMLParser(HTMLParser):
             # print('Encountered element with ID new_packages, start tag: {}'.format(tag))
             self.fix_hit = True
             self.fix_tag = tag
+        if tag == "div" and ("id", "issue_overview") in attrs:
+            self.issue_overview_hit = True
+            self.issue_overview_tag = tag
         # else:
         #     print('Ignoring start tag: {}'.format(tag))
 
@@ -229,6 +227,8 @@ class PackagesHTMLParser(HTMLParser):
             # print('Encountered end tag for element with ID new_packages')
             self.fix_hit = False
             self.arch_hit = False
+        if self.issue_overview_hit and self.issue_overview_tag == tag:
+            self.issue_overview_hit = False
         # else:
         #     print('Ignoring end tag: {}'.format(tag))
 
@@ -247,18 +247,20 @@ class PackagesHTMLParser(HTMLParser):
                 # print('Found relevant package: {}'.format(data))
                 self.fixes.append(data)
 
+        if self.issue_overview_hit and data and not data.__contains__("Issue Overview:"):
+            self.issue_overview_text.append(data)
         # else:
         #     print('Ignoring data: {}'.format(data.strip()))
 
 
-def map_to_vulnerability(version, alas, fixed_in):
+def map_to_vulnerability(version, alas, fixed_in, description):
     if not alas:
         raise ValueError("Invalid reference to AlasSummary")
 
     v = Vulnerability()
     v.Name = alas.id
     v.NamespaceName = namespace + ":" + version
-    v.Description = ""
+    v.Description = description
     v.Severity = severity_map.get(alas.sev, "Unknown")
     v.Metadata = {
         "CVE": [],
@@ -268,7 +270,7 @@ def map_to_vulnerability(version, alas, fixed_in):
         v.Metadata["CVE"] = [{"Name": cve} for cve in alas.cves]
 
     v.Link = alas.url
-    for item in fixed_in:
+    for item in sorted(fixed_in):
         f = FixedIn()
         f.Name = item.pkg
         f.NamespaceName = v.NamespaceName

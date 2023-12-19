@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import time
 from decimal import Decimal, DecimalException
 
 import requests
@@ -36,9 +37,14 @@ ecosystem_map = {
     "NPM": "npm",
     "NUGET": "nuget",
     "PIP": "python",
+    "PUB": "dart",
     "RUBYGEMS": "gem",
     "RUST": "rust",
+    "SWIFT": "swift",
 }
+
+GITHUB_RATE_LIMIT_REMAINING_HEADER = "x-ratelimit-remaining"
+GITHUB_RATE_LIMIT_RESET_HEADER = "x-ratelimit-reset"
 
 
 class Parser:
@@ -49,7 +55,7 @@ class Parser:
         download_timeout=125,
         api_url="https://api.github.com/graphql",
         logger=None,
-    ):  # noqa
+    ):
         self.db = db.connection(workspace.input_path, serializer="json")
         self.download_timeout = download_timeout
         self.api_url = api_url
@@ -205,9 +211,26 @@ def get_query(token, query, timeout=125, api_url="https://api.github.com/graphql
     logger = logging.getLogger("get-query")
 
     headers = {"Authorization": f"token {token}"}
-    logger.debug(f"downloading github advisories from {api_url}")
+    logger.info(f"downloading github advisories from {api_url}")
 
     response = requests.post(api_url, json={"query": query}, timeout=timeout, headers=headers)
+    if GITHUB_RATE_LIMIT_REMAINING_HEADER in response.headers and GITHUB_RATE_LIMIT_RESET_HEADER in response.headers:
+        remaining = int(response.headers[GITHUB_RATE_LIMIT_REMAINING_HEADER])
+        # reset time is the time in UNIX Epoch Seconds at which
+        # the rate limit will reset.
+        reset_time = int(response.headers[GITHUB_RATE_LIMIT_RESET_HEADER])
+        logger.debug(f"github rate limit has {remaining} requests left {reset_time}")
+        if remaining < 10:
+            current_time = int(time.time())
+            sleep_time = reset_time - current_time
+            # note that the rate limit resets 1x / hour, so this could be a long time
+            if sleep_time > 1 and sleep_time < 3600:  # never sleep for more than 1 hour
+                logger.info(f"sleeping for {sleep_time} seconds to allow GitHub rate limit to reset")
+                time.sleep(sleep_time)
+            elif sleep_time > 3600:
+                raise Exception(
+                    f"github rate limit exhaused and not expected to reset for {sleep_time} seconds. Try again later.",
+                )
     response.raise_for_status()
     if response.status_code == 200:
         return response.json()
@@ -230,7 +253,7 @@ def get_advisory(ghsaId, data):
     return {}
 
 
-def get_vulnerabilities(token, ghsaId, timestamp, vuln_cursor, parent_cursor):  # noqa
+def get_vulnerabilities(token, ghsaId, timestamp, vuln_cursor, parent_cursor):
     """
     In the improbable case that an Advisory is associated with more than 100
     (Github's GraphQL limit) these will need to get fetched until the cursor is
@@ -320,7 +343,6 @@ def needs_subquery(data):
     return False
 
 
-# noqa
 def graphql_advisories(cursor=None, timestamp=None, vuln_cursor=None):
     """
     The cursor needs to be the `endCursor` for the last successful query. The
@@ -427,9 +449,9 @@ def graphql_advisories(cursor=None, timestamp=None, vuln_cursor=None):
         "%sclassifications: [GENERAL, MALWARE], first: 100, orderBy: {field: UPDATED_AT, direction: ASC}" % vuln_after
     )
 
-    return """
+    return f"""
     {{
-      {} {{
+      {caller} {{
         nodes {{
           ghsaId
           classification
@@ -446,7 +468,7 @@ def graphql_advisories(cursor=None, timestamp=None, vuln_cursor=None):
           references {{
             url
           }}
-          vulnerabilities({}) {{
+          vulnerabilities({vulnerabilities}) {{
             pageInfo {{
               endCursor
               hasNextPage
@@ -474,10 +496,7 @@ def graphql_advisories(cursor=None, timestamp=None, vuln_cursor=None):
         }}
       }}
     }}
-    """.format(
-        caller,
-        vulnerabilities,
-    )
+    """
 
 
 class NodeParser(dict):
@@ -549,6 +568,7 @@ class NodeParser(dict):
 
     def _make_cvss(self, cvss_vector: str, vulnerability_id: str) -> CVSS | None:
         try:
+            cvss_vector = cvss_vector.removesuffix("/")
             cvss3_obj = CVSS3(cvss_vector)
 
             cvss_object = CVSS(

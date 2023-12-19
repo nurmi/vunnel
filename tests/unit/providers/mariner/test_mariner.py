@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 from pytest_unordered import unordered
-from vunnel import result, workspace
+from vunnel import result, workspace, utils
 from vunnel.providers.mariner import Config, Provider, parser
 from vunnel.providers.mariner.parser import MarinerXmlFile
 from vunnel.utils.vulnerability import Vulnerability, FixedIn
@@ -24,7 +24,16 @@ from vunnel.utils.vulnerability import Vulnerability, FixedIn
                     Severity="High",
                     Link="https://nvd.nist.gov/vuln/detail/CVE-2023-21980",
                     CVSS=[],
-                    FixedIn=[FixedIn(Name="mysql", NamespaceName="mariner:2.0", VersionFormat="rpm", Version="0:8.0.33-1.cm2")],
+                    FixedIn=[
+                        FixedIn(
+                            Name="mysql",
+                            NamespaceName="mariner:2.0",
+                            VersionFormat="rpm",
+                            Version="0:8.0.33-1.cm2",
+                            Module=None,
+                            VendorAdvisory=None,
+                        )
+                    ],
                     Metadata={},
                 ),
                 Vulnerability(
@@ -34,7 +43,16 @@ from vunnel.utils.vulnerability import Vulnerability, FixedIn
                     Severity="Medium",
                     Link="https://nvd.nist.gov/vuln/detail/CVE-2023-21977",
                     CVSS=[],
-                    FixedIn=[FixedIn(Name="mysql", NamespaceName="mariner:2.0", VersionFormat="rpm", Version="0:8.0.33-1.cm2")],
+                    FixedIn=[
+                        FixedIn(
+                            Name="mysql",
+                            NamespaceName="mariner:2.0",
+                            VersionFormat="rpm",
+                            Version="0:8.0.33-1.cm2",
+                            Module=None,
+                            VendorAdvisory=None,
+                        )
+                    ],
                     Metadata={},
                 ),
                 Vulnerability(
@@ -45,7 +63,14 @@ from vunnel.utils.vulnerability import Vulnerability, FixedIn
                     Link="https://nvd.nist.gov/vuln/detail/CVE-2022-3736",
                     CVSS=[],
                     FixedIn=[
-                        FixedIn(Name="bind", NamespaceName="mariner:2.0", VersionFormat="rpm", Version="None"),
+                        FixedIn(
+                            Name="bind",
+                            NamespaceName="mariner:2.0",
+                            VersionFormat="rpm",
+                            Version="None",
+                            Module=None,
+                            VendorAdvisory=None,
+                        ),
                     ],
                 ),
             ],
@@ -59,14 +84,6 @@ def test_parse(tmpdir, helpers, input_file, expected):
     vulnerabilities = [v for v in subject.vulnerabilities()]
     assert len(vulnerabilities) == len(expected)
     assert vulnerabilities == expected
-
-
-@pytest.fixture()
-def disable_get_requests(monkeypatch):
-    def disabled(*args, **kwargs):
-        raise RuntimeError("requests disabled but HTTP GET attempted")
-
-    monkeypatch.setattr(parser.requests, "get", disabled)
 
 
 def test_provider_schema(helpers, disable_get_requests, monkeypatch):
@@ -88,3 +105,23 @@ def test_provider_schema(helpers, disable_get_requests, monkeypatch):
 
     assert 3 == workspace.num_result_entries()
     assert workspace.result_schemas_valid(require_entries=True)
+
+
+def test_provider_via_snapshot(helpers, disable_get_requests, monkeypatch):
+    workspace = helpers.provider_workspace_helper(name=Provider.name())
+
+    c = Config(allow_versions=["2.0"])
+    c.runtime.result_store = result.StoreStrategy.FLAT_FILE
+    p = Provider(root=workspace.root, config=c)
+
+    mock_data_path = helpers.local_dir("test-fixtures/mariner-truncated-2.0-oval.xml")
+    shutil.copy(mock_data_path, workspace.input_dir / "mariner-truncated-2.0-oval.xml")
+
+    def mock_download(*args, **kwargs):
+        return [mock_data_path]
+
+    monkeypatch.setattr(p.parser, "_download", mock_download)
+
+    p.update(None)
+
+    workspace.assert_result_snapshots()

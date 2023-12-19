@@ -1,26 +1,28 @@
-# flake8: noqa
 from __future__ import annotations
 
 import concurrent.futures
 import copy
-import json
 import logging
 import os
 import re
 from collections import namedtuple
 from datetime import datetime as dt
 from decimal import Decimal as D
+from typing import TYPE_CHECKING
 
-import requests
+import orjson
 from cvss import CVSS3
 from dateutil import parser as dt_parser
 
 from vunnel import utils
-from vunnel.utils import rpm
+from vunnel.utils import http, rpm
 from vunnel.utils.oval_parser import Config
 from vunnel.utils.vulnerability import vulnerability_element
 
 from .oval_parser import Parser as RHELOvalParser
+
+if TYPE_CHECKING:
+    import requests
 
 namespace = "rhel"
 
@@ -45,8 +47,14 @@ class Parser:
     __full_dir_name__ = "full"
     __last_full_sync_filename__ = "last_full_sync"
 
-    def __init__(
-        self, workspace, download_timeout=None, max_workers=None, full_sync_interval=None, skip_namespaces=None, logger=None
+    def __init__(  # noqa: PLR0913
+        self,
+        workspace,
+        download_timeout=None,
+        max_workers=None,
+        full_sync_interval=None,
+        skip_namespaces=None,
+        logger=None,
     ):
         self.workspace = workspace
         self.cve_dir_path = os.path.join(workspace.input_path, self.__cve_dir_name__)
@@ -63,21 +71,18 @@ class Parser:
             logger = logging.getLogger(self.__class__.__name__)
         self.logger = logger
 
-    @utils.retry_with_backoff()
     def _download_minimal_cves(self, page, limit=100):
         path_params = {"per_page": str(limit), "page": page}
 
         self.logger.info(
-            f"downloading CVE list from url={self.__summary_url__} count={path_params['per_page']} page={path_params['page']}"
+            f"downloading CVE list from url={self.__summary_url__} count={path_params['per_page']} page={path_params['page']}",
         )
-        r = requests.get(
+        r = http.get(
             self.__summary_url__,
+            self.logger,
             params=path_params,
             timeout=self.download_timeout,
         )
-
-        if r.status_code != 200:
-            raise Exception(f"CVE list download failed with {r.status_code}")
         return r.json()
 
     def _process_minimal_cve(self, min_cve_api, do_full_sync, min_cve_dir, full_cve_dir):
@@ -105,7 +110,7 @@ class Parser:
         try:
             if not do_full_sync and os.path.exists(min_cve_file) and os.path.exists(full_cve_file):
                 with open(min_cve_file, encoding="utf-8") as fp:  # load minimal cve from disk
-                    min_cve_fs = json.load(fp)
+                    min_cve_fs = orjson.loads(fp.read())
                 if min_cve_fs == min_cve_api:  # only case where a download is not necessary
                     download = False
                 else:
@@ -117,8 +122,8 @@ class Parser:
                 self._download_entity(url, full_cve_file)
 
                 # save minimal to disk
-                with open(min_cve_file, "w", encoding="utf-8") as fp:
-                    json.dump(min_cve_api, fp)
+                with open(min_cve_file, "wb") as fp:
+                    fp.write(orjson.dumps(min_cve_api))
 
             return download
         except Exception as e:
@@ -129,7 +134,7 @@ class Parser:
             raise  # raise the original exception
 
     # TODO: ALEX, should skip_if_exists be hooked up here? (currently unused)
-    def _sync_cves(self, skip_if_exists=False, do_full_sync=True):  # noqa
+    def _sync_cves(self, skip_if_exists=False, do_full_sync=True):  # noqa: PLR0915, PLR0912, C901
         """
         Download minimal or summary cve and compare it to persisted state on disk. If no persisted state is found or a
         a change is detected, full cve is downloaded
@@ -141,7 +146,7 @@ class Parser:
         :return:
         """
 
-        now = dt.utcnow()
+        now = dt.utcnow()  # noqa: DTZ003
 
         # setup workspace for full cves
         full_cve_dir = os.path.join(self.cve_dir_path, self.__full_dir_name__)
@@ -163,7 +168,7 @@ class Parser:
                     last_full_sync = dt_parser.parse(fp.read())
                 if (now - last_full_sync).days < self.full_sync_interval:
                     do_full_sync = False
-        except:
+        except Exception:
             self.logger.debug("ignoring error loading last_full_sync timestamp from disk", exc_info=True)
             do_full_sync = True
 
@@ -245,30 +250,32 @@ class Parser:
 
                 if api_cve_set.difference(fs_min_cve_set):
                     self.logger.warning(
-                        f"CVEs reported by api missing min content on fs: {api_cve_set.difference(fs_min_cve_set)}"
+                        f"CVEs reported by api missing min content on fs: {api_cve_set.difference(fs_min_cve_set)}",
                     )
 
                 if api_cve_set.difference(fs_full_cve_set):
                     self.logger.warning(
-                        f"CVEs reported by api missing full content on fs: {api_cve_set.difference(fs_min_cve_set)}"
+                        f"CVEs reported by api missing full content on fs: {api_cve_set.difference(fs_min_cve_set)}",
                     )
             except Exception:
                 self.logger.debug("ignoring errors reconciling api cves with fs content", exc_info=True)
 
         return full_cve_dir
 
-    @utils.retry_with_backoff()
     def _download_entity(self, url, destination):
         self.logger.trace(f"downloading {url}")
-        r = requests.get(url, timeout=self.download_timeout)
+
+        def status_handler(r: requests.Response):
+            if r.status_code not in [200, 404]:
+                r.raise_for_status()
+
+        r = http.get(url, self.logger, status_handler=status_handler, timeout=self.download_timeout)
 
         if r.status_code == 200:
             with open(destination, "w", encoding="utf-8") as fp:
                 fp.write(r.text)
         elif r.status_code == 404:
             self.logger.warning(f"GET {url} returned 404 not found error")
-        else:
-            raise Exception(f"error downloading content from {url}, status code {r.status_code}")
 
     def _fetch_rhsa_fix_version(self, rhsa_id, platform, package):
         fixed_ver = None
@@ -282,7 +289,7 @@ class Parser:
                 )
             else:
                 self.logger.debug(f"{rhsa_id} not found for platform {platform}")
-        except:
+        except Exception:
             self.logger.exception(f"error looking up {package} in {rhsa_id} for {platform}")
 
         return fixed_ver, module_name
@@ -391,7 +398,7 @@ class Parser:
                 else:  # not compliant with rpm filename spec, could be an app stream
                     name = colon_comps[0]  # best guess for name, fall back to rhsa for version lookup
 
-        else:  # no epoch foo-bar-2.3.4-5.el6_7.8 or something else totally different
+        else:  # no epoch foo-bar-2.3.4-5.el6_7.8 or something else totally different  # noqa: PLR5501
             if package.count("-") >= 2:  #
                 name_other_comps = package.rsplit("-", 2)  # split name-version-release.arch.rpm into max 3 chunks
                 name = name_other_comps[0]  # only the name matters
@@ -401,7 +408,7 @@ class Parser:
 
         return name, version
 
-    def _parse_affected_release(self, cve_id, content):
+    def _parse_affected_release(self, cve_id: str, content) -> list[FixedIn]:  # noqa: C901, PLR0912, PLR0915
         fixed_ins = []
         ars = content.get("affected_release", [])
 
@@ -459,20 +466,20 @@ class Parser:
                                 final_m = rhsa_module
                             else:
                                 self.logger.debug(
-                                    f"{cve_id}, platform={ar_obj.platform} : no matches found for {ar_obj.rhsa_id} and package={ar_obj.name} Falling back to CVE version {ar_obj.version}"
+                                    f"{cve_id}, platform={ar_obj.platform} : no matches found for {ar_obj.rhsa_id} and package={ar_obj.name} Falling back to CVE version {ar_obj.version}",  # noqa: E501
                                 )
                                 final_v = ar_obj.version
                                 final_m = rhsa_module
                         else:
                             self.logger.debug(
-                                f"{cve_id}, platform={ar_obj.platform} : no associated RHSA for package={ar_obj.name} Falling back to CVE version {ar_obj.version}"
+                                f"{cve_id}, platform={ar_obj.platform} : no associated RHSA for package={ar_obj.name} Falling back to CVE version {ar_obj.version}",  # noqa: E501
                             )
                             final_v = ar_obj.version
                             final_m = None
 
                     elif ar_obj.rhsa_id:  # package name missing but there's at least an rhsa ID to go off
                         self.logger.debug(
-                            f"{cve_id}, platform={ar_obj.platform} : missing package, trying to find a match using {ar_obj.rhsa_id} and other affected releases"
+                            f"{cve_id}, platform={ar_obj.platform} : missing package, trying to find a match using {ar_obj.rhsa_id} and other affected releases",  # noqa: E501
                         )
 
                         possible_packages = (
@@ -484,19 +491,19 @@ class Parser:
 
                             if rhsa_version:
                                 self.logger.debug(
-                                    f"{cve_id} platform={ar_obj.platform} : found RHSA match package={pkg_name} version={rhsa_version}"
+                                    f"{cve_id} platform={ar_obj.platform} : found RHSA match package={pkg_name} version={rhsa_version}",
                                 )
                                 final_v = rhsa_version
                                 final_m = rhsa_module
 
                                 platform_packages[ar_obj.platform].add(
-                                    pkg_name
+                                    pkg_name,
                                 )  # add it to guessed package names to avoid repeats
                                 ar_obj.name = pkg_name
                                 break
                         else:
                             self.logger.debug(
-                                f"{cve_id}, platform={ar_obj.platform} : no package name matches found using {ar_obj.rhsa_id} and other affected releases"
+                                f"{cve_id}, platform={ar_obj.platform} : no package name matches found using {ar_obj.rhsa_id} and other affected releases",  # noqa: E501
                             )
                             final_v = None
                             final_m = None
@@ -507,7 +514,7 @@ class Parser:
 
                     if not ar_obj.name or not final_v:
                         self.logger.debug(
-                            f"{cve_id}, platform={ar_obj.platform} : skipping affected release record as all attempts to deduce package name and or version were futile"
+                            f"{cve_id}, platform={ar_obj.platform} : skipping affected release record as all attempts to deduce package name and or version were futile",  # noqa: E501
                         )
                         continue
 
@@ -518,12 +525,12 @@ class Parser:
                     if prev_ar_obj:
                         if rpm.compare_versions(prev_ar_obj.version, ar_obj.version) < 0:
                             self.logger.debug(
-                                f"{cve_id}, platform={prev_ar_obj.platform}, package={prev_ar_obj.name}, module={prev_ar_obj.module} : multiple fix versions found, {ar_obj.version} > {prev_ar_obj.version}"
+                                f"{cve_id}, platform={prev_ar_obj.platform}, package={prev_ar_obj.name}, module={prev_ar_obj.module} : multiple fix versions found, {ar_obj.version} > {prev_ar_obj.version}",  # noqa: E501
                             )
                             final_ar_objs[(ar_obj.name, ar_obj.platform, ar_obj.module)] = ar_obj
                         else:
                             self.logger.debug(
-                                f"{cve_id}, platform={prev_ar_obj.platform}, package={prev_ar_obj.name}, module={prev_ar_obj.module} : multiple fix versions found, {ar_obj.version} <= {prev_ar_obj.version}"
+                                f"{cve_id}, platform={prev_ar_obj.platform}, package={prev_ar_obj.name}, module={prev_ar_obj.module} : multiple fix versions found, {ar_obj.version} <= {prev_ar_obj.version}",  # noqa: E501
                             )
                     else:
                         final_ar_objs[(ar_obj.name, ar_obj.platform, ar_obj.module)] = ar_obj
@@ -558,14 +565,14 @@ class Parser:
                 del platform_packages
                 del final_ar_objs
                 del all_ar_objs
-            except Exception:  # nosec
-                pass
+            except Exception:
+                self.logger.info("exception freeing up intermediate data structures", exc_info=True)
 
         return fixed_ins
 
-    def _parse_package_state(self, cve_id, content):
-        fixed_ins = []
-        out_of_support = []  # Track items out of support to be able to add them if others are affected
+    def _parse_package_state(self, cve_id: str, fixed: list[FixedIn], content) -> list[FixedIn]:  # noqa: C901
+        affected: list[FixedIn] = []
+        out_of_support: list[FixedIn] = []  # Track items out of support to be able to add them if others are affected
         pss = content.get("package_state", [])
 
         for item in pss:
@@ -595,24 +602,24 @@ class Parser:
 
                 state = item.get("fix_state", None)
                 if state in ["Affected", "Fix deferred"]:
-                    fixed_ins.append(
+                    affected.append(
                         FixedIn(
                             platform=platform,
                             package=package_name,
                             version="None",
                             module=module,
                             advisory=Advisory(wont_fix=False, rhsa_id=None, link=None, severity=None),
-                        )
+                        ),
                     )
                 elif state in ["Will not fix"]:
-                    fixed_ins.append(
+                    affected.append(
                         FixedIn(
                             platform=platform,
                             package=package_name,
                             version="None",
                             module=module,
                             advisory=Advisory(wont_fix=True, rhsa_id=None, link=None, severity=None),
-                        )
+                        ),
                     )
                 elif state in ["Out of support scope"]:
                     out_of_support.append(
@@ -622,7 +629,7 @@ class Parser:
                             version="None",
                             module=module,
                             advisory=Advisory(wont_fix=True, rhsa_id=None, link=None, severity=None),
-                        )
+                        ),
                     )
                 elif state in [
                     "New",
@@ -633,37 +640,40 @@ class Parser:
                 else:
                     self.logger.debug(f"{state!r} is an unknown state")
                     continue
-            except:
+            except Exception:
                 self.logger.exception(f"error parsing {cve_id} package state entity: {item}")
 
-        merged_fixed_ins = Parser._merge_out_of_support_affected(fixed_ins, out_of_support)
-        return merged_fixed_ins
+        return affected + out_of_support
 
-    @staticmethod
-    def _merge_out_of_support_affected(affected_fixed_ins: list[FixedIn], out_of_support: list[FixedIn]) -> list[FixedIn]:
-        if out_of_support and affected_fixed_ins:
-            merged = copy.deepcopy(affected_fixed_ins)
-            for oos in out_of_support:
-                for affected in affected_fixed_ins:
-                    # A newer release is impacted, so assume out-of-support version is as well
-                    try:
-                        if oos.package == affected.package and int(oos.platform) < int(affected.platform):
-                            merged.append(oos)
-                            break
-                    except ValueError:
-                        # Be conservative if we cannot tell if it is <
-                        merged.append(oos)
-                        break
-            return merged
-        return affected_fixed_ins
+    def _parse_cvss3(self, cvss3: dict | None) -> RHELCVSS3 | None:
+        if not cvss3:
+            return None
 
-    def _parse_cve(self, cve_id, content):
+        vector = cvss3.get("cvss3_scoring_vector", None)
+        base_score = cvss3.get("cvss3_base_score", None)
+
+        if not vector or not base_score:
+            return None
+
+        try:
+            return RHELCVSS3(
+                vector,
+                base_score,
+                cvss3.get("status", None),
+            )
+
+        except Exception:
+            self.logger.info("unable to make cvss3, defaulting to None", exc_info=True)
+
+        return None
+
+    def _parse_cve(self, cve_id, content):  # noqa: C901, PLR0912, PLR0915
         # logger.debug('Parsing {}'.format(cve_id))
 
         results = []
         platform_artifacts = {}
         fins = self._parse_affected_release(cve_id, content)
-        nfins = self._parse_package_state(cve_id, content)
+        nfins = self._parse_package_state(cve_id, fins, content)
         platform_package_module_tuples = set()
 
         if fins or nfins:
@@ -686,20 +696,12 @@ class Parser:
                 sev = "Unknown"
 
             details = content.get("details", [])
-            if details and isinstance(details, list):
+            if details and isinstance(details, list):  # noqa: SIM108
                 description = details[-1]
             else:
                 description = ""  # leaving this empty to be compatible with some old client side logic that expects it
 
-            try:
-                cvssv3 = content.get("cvss3", {})
-                cvssv3_obj = RHELCVSS3(
-                    cvssv3.get("cvss3_scoring_vector", None),
-                    cvssv3.get("cvss3_base_score", None),
-                    cvssv3.get("status", None),
-                )
-            except:
-                cvssv3_obj = None
+            cvssv3_obj = self._parse_cvss3(content.get("cvss3", None))
 
             for item in nfins:  # process not fixed in packages first as that trumps fixes
                 if item.platform not in platform_artifacts:
@@ -715,7 +717,7 @@ class Parser:
                     item.module,
                 ) in platform_package_module_tuples:
                     self.logger.debug(
-                        f"{cve_id}, platform={item.platform}, package={item.package}, module={item.module} : partial fix found but package is still vulnerable. Ignoring fix version {item.version}"
+                        f"{cve_id}, platform={item.platform}, package={item.package}, module={item.module} : partial fix found but package is still vulnerable. Ignoring fix version {item.version}",  # noqa: E501
                     )
                     continue
 
@@ -753,7 +755,7 @@ class Parser:
                                 {
                                     "ID": artifact.advisory.rhsa_id,
                                     "Link": artifact.advisory.link,
-                                }
+                                },
                             )
 
                     v["Vulnerability"]["FixedIn"].append(
@@ -764,7 +766,7 @@ class Parser:
                             "VersionFormat": "rpm",  # hard code version format for now
                             "NamespaceName": ns,
                             "VendorAdvisory": a,
-                        }
+                        },
                     )
 
                 results.append(NamespacePayload(namespace=ns, payload=v))
@@ -773,7 +775,7 @@ class Parser:
 
     def _process_full_cve(self, cve_id, cve_file_path):
         with open(cve_file_path, encoding="utf-8") as fp:
-            content = json.load(fp)
+            content = orjson.loads(fp.read())
 
         return self._parse_cve(cve_id, content)
 
@@ -814,7 +816,7 @@ class Parser:
 
 
 class AffectedRelease:
-    def __init__(self, name=None, version=None, platform=None, rhsa_id=None, module=None):
+    def __init__(self, name=None, version=None, platform=None, rhsa_id=None, module=None):  # noqa: PLR0913
         self.name = name
         self.version = version
         self.platform = platform

@@ -1,24 +1,22 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import os
 import re
 from collections import namedtuple
 from typing import Any
 
-import requests
+import orjson
 
-from vunnel import utils
-from vunnel.utils import vulnerability
+from vunnel.utils import http, vulnerability
 
 DSAFixedInTuple = namedtuple("DSAFixedInTuple", ["dsa", "link", "distro", "pkg", "ver"])
 DSACollection = namedtuple("DSACollection", ["cves", "nocves"])
 
 
 # Only releases presenting this mapping will be output by the driver, maintain it with new releases.
-# Can also be extended via configuration
+# Can also be extended via configuration.
 debian_distro_map = {
     "trixie": "13",
     "bookworm": "12",
@@ -59,20 +57,14 @@ class Parser:
             logger = logging.getLogger(self.__class__.__name__)
         self.logger = logger
 
-    @utils.retry_with_backoff()
     def _download_json(self):
         """
         Downloads debian json file
         :return:
         """
         try:
-            self.logger.info(f"downloading debian security tracker data from {self._dsa_url_}")
-
-            r = requests.get(self._json_url_, timeout=self.download_timeout)
-            if r.status_code != 200:
-                raise Exception(f"GET {self._json_url_} failed with HTTP error {r.status_code}")
-
-            json.loads(r.text)  # quick check if json is valid
+            r = http.get(self._json_url_, self.logger, timeout=self.download_timeout)
+            orjson.loads(r.text)  # quick check if json is valid
             with open(self.json_file_path, "w", encoding="utf-8") as OFH:
                 OFH.write(r.text)
 
@@ -80,18 +72,13 @@ class Parser:
             self.logger.exception("Error downloading debian json file")
             raise
 
-    @utils.retry_with_backoff()
     def _download_dsa(self):
         """
         Downloads debian dsa file
         :return:
         """
         try:
-            self.logger.info(f"downloading DSA from {self._dsa_url_}")
-            r = requests.get(self._dsa_url_, timeout=self.download_timeout)
-            if r.status_code != 200:
-                raise Exception(f"GET {self._dsa_url_} failed with HTTP error {r.status_code}")
-
+            r = http.get(self._dsa_url_, self.logger, timeout=self.download_timeout)
             with open(self.dsa_file_path, "w", encoding="utf-8") as OFH:
                 OFH.write(r.text)
 
@@ -128,8 +115,7 @@ class Parser:
 
         return ns_cve_dsalist
 
-    # noqa
-    def _parse_dsa_record(self, dsa_lines):
+    def _parse_dsa_record(self, dsa_lines):  # noqa: C901
         """
 
         :param dsa_lines:
@@ -188,7 +174,7 @@ class Parser:
                     continue
 
             return dsa
-        except Exception:  # noqa
+        except Exception:
             self.logger.exception("failed to parse dsa record")
 
     def _get_dsa_map(self):
@@ -259,7 +245,7 @@ class Parser:
 
         return ns_cve_dsalist
 
-    def _normalize_json(self, ns_cve_dsalist=None):  # noqa: PLR0912,PLR0915
+    def _normalize_json(self, ns_cve_dsalist=None):  # noqa: PLR0912,PLR0915,C901
         adv_mets = {}
         # all_matched_dsas = set()
         # all_dsas = set()
@@ -274,7 +260,7 @@ class Parser:
 
         if os.path.exists(self.json_file_path):
             with open(self.json_file_path, encoding="utf-8") as FH:
-                data = json.loads(FH.read())
+                data = orjson.loads(FH.read())
         else:
             raise Exception(f"debian json source not found under {self.json_file_path}")
 
@@ -444,10 +430,10 @@ class Parser:
 
                             # retlists[relno].append(final_record)
 
-                    except Exception:  # noqa
+                    except Exception:
                         self.logger.exception(f"ignoring error parsing vuln: {vid}, pkg: {pkg}, rel: {rel}")
 
-        self.logger.debug(f"metrics for advisory information: {json.dumps(adv_mets)}")
+        self.logger.debug(f"metrics for advisory information: {orjson.dumps(adv_mets).decode('utf-8')}")
 
         adv_mets.clear()
         # all_dsas.clear()
@@ -480,7 +466,7 @@ class Parser:
             for file in files:
                 if file.endswith(".json") and file.startswith("vulnerabilities"):
                     with open(os.path.join(root, file)) as f:
-                        process_file(json.load(f))
+                        process_file(orjson.loads(f.read()))
 
         if legacy_records:
             self.logger.info(f"found existing legacy data for the following releases: {list(legacy_records.keys())}")
