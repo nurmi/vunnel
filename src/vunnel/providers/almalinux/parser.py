@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 # with expectations of the resulting OS schema
 
 NAMESPACE = "almalinux"
-ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
+ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.full.json"
+#ALMALINUX_URL_BASE = "https://errata.almalinux.org/{}/errata.json"
 
 
 class Parser:
@@ -55,11 +56,13 @@ class Parser:
     def get(self) -> Generator[tuple[str, str, dict[str, dict[str, Any]]], None, None]:
         for local_file_path, namespace in self._download():
             with open(local_file_path) as FH:
-                alma_records = json.loads(FH.read())
+                alma_records = json.loads(FH.read()).get('data', [])
 
             # TODO: consider adding an alma record schema check, here
 
             for alma_record in alma_records:
+                #print (alma_record)
+
                 try:
                     vidmap = self.parse_alma_record(alma_record, namespace)
                     for vid in vidmap:
@@ -141,24 +144,22 @@ class Parser:
         self,
         in_pkgs: list[dict[str, Any]],
         namespace: str,
-        module_info: str | None,
+        #module_info: str | None,
         vendor_advisory: dict[str, Any],
     ) -> list[FixedIn]:
         fins = {}  # type: dict[str,Any]
         for pkg in in_pkgs:
+            #print(pkg)
             if pkg.get("arch", "") not in ["x86_64", "noarch"]:
                 continue
 
             version = "{}:{}-{}".format(pkg["epoch"], pkg["version"], pkg["release"])
-            # fin = {
-            #    "Name": pkg["name"],
-            #    "NamespaceName": namespace,
-            #    "VersionFormat": "rpm",
-            #    "Version": version,
-            #    "Module": module_info,
-            #    "VendorAdvisory": vendor_advisory,
-            # }
-
+            
+            module_info = pkg.get("module", None)
+            if not module_info:
+                # handles when module is set but is blank/empty types lime "" and [], seen in some cases
+                module_info = None
+            
             fin = FixedIn(
                 Name=pkg["name"],
                 NamespaceName=namespace,
@@ -180,14 +181,13 @@ class Parser:
         return list(fins.values())
 
     def parse_alma_record(self, input_record: dict[str, Any], namespace: str) -> dict[str, Vulnerability]:
-        vid = input_record.get("updateinfo_id", None)
+        vid = input_record.get("id", None)
         in_description = input_record.get("description", "")
         in_type = input_record.get("type", "")
         in_severity = input_record.get("severity", "none")
         in_refs = input_record.get("references", [])
-        in_module_name = input_record.get("pkglist", {}).get("module", {}).get("name", "")
-        in_module_version = input_record.get("pkglist", {}).get("module", {}).get("stream", "")
-        in_pkgs = input_record.get("pkglist", {}).get("packages", [])
+        #in_modules = input_record.get('modules', [])
+        in_pkgs = input_record.get("packages", [])
         input_record.get("description", "")
 
         # quick check to make sure this is a security advisory and has a name
@@ -200,11 +200,12 @@ class Parser:
 
         link, cves = self._parse_linkrefs(in_refs, vid, namespace)
 
-        module_info = self._parse_moduleinfo(in_module_name, in_module_version)
+        #module_info = self._parse_moduleinfo(in_modules)
 
         vendor_advisory = self._parse_vendor_advisory(vid, link)
 
-        fixed_ins = self._parse_fixed_ins(in_pkgs, namespace, module_info, vendor_advisory)
+        #fixed_ins = self._parse_fixed_ins(in_pkgs, namespace, module_info, vendor_advisory)        
+        fixed_ins = self._parse_fixed_ins(in_pkgs, namespace, vendor_advisory)
 
         # construct the final set of OS schema records
 
